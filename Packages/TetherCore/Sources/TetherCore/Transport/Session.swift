@@ -458,24 +458,55 @@ public actor ClientConnection {
         let temp = destination.appendingPathExtension("partial")
         FileManager.default.createFile(atPath: temp.path, contents: nil)
         let handle = try FileHandle(forWritingTo: temp)
-        defer { try? handle.close() }
-        var offset: UInt64 = 0
-        var total: UInt64 = 0
-        while !Task.isCancelled {
-            let chunk = try await read(path: path, offset: offset, length: TetherCoreInfo.chunkSize)
-            total = chunk.totalSize
-            if !chunk.data.isEmpty {
-                try handle.write(contentsOf: chunk.data)
-                offset += UInt64(chunk.data.count)
-                progress(offset, total)
+        var finished = false
+        defer {
+            try? handle.close()
+            if !finished { try? FileManager.default.removeItem(at: temp) }
+        }
+        let first = try await read(path: path, offset: 0, length: TetherCoreInfo.chunkSize)
+        let total = first.totalSize
+        if !first.data.isEmpty {
+            try handle.write(contentsOf: first.data)
+            progress(UInt64(first.data.count), total)
+        }
+        var completed = UInt64(first.data.count)
+        if !first.eof, completed < total {
+            var nextRequest = completed
+            var inflight: [UInt64: Task<ReadChunk, Error>] = [:]
+            func fill() {
+                while inflight.count < TetherCoreInfo.transferPipelineDepth, nextRequest < total {
+                    let offset = nextRequest
+                    let length = Int(min(UInt64(TetherCoreInfo.chunkSize), total - offset))
+                    nextRequest += UInt64(length)
+                    inflight[offset] = Task {
+                        try await self.read(path: path, offset: offset, length: length)
+                    }
+                }
             }
-            if chunk.eof || chunk.data.isEmpty { break }
+            fill()
+            while completed < total {
+                if Task.isCancelled {
+                    inflight.values.forEach { $0.cancel() }
+                    throw CancellationError()
+                }
+                guard let task = inflight.removeValue(forKey: completed) else {
+                    throw ProtocolFailure(code: .internalError, message: "The download ended early.")
+                }
+                let chunk = try await task.value
+                if chunk.data.isEmpty {
+                    throw ProtocolFailure(code: .internalError, message: "The download ended early.")
+                }
+                try handle.write(contentsOf: chunk.data)
+                completed += UInt64(chunk.data.count)
+                progress(completed, total)
+                fill()
+            }
         }
         if Task.isCancelled {
             try? FileManager.default.removeItem(at: temp)
             throw CancellationError()
         }
-        guard total == 0 || offset == total else {
+        guard total == 0 || completed == total else {
             try? FileManager.default.removeItem(at: temp)
             throw ProtocolFailure(code: .internalError, message: "The download ended early.")
         }
@@ -484,6 +515,7 @@ public actor ClientConnection {
             try FileManager.default.removeItem(at: destination)
         }
         try FileManager.default.moveItem(at: temp, to: destination)
+        finished = true
     }
 
     public func upload(
@@ -507,19 +539,31 @@ public actor ClientConnection {
         }
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
-        var offset: UInt64 = 0
+        var sent: UInt64 = 0
+        var confirmed: UInt64 = 0
+        var window: [(count: Int, task: Task<Void, Error>)] = []
         do {
-            while offset < size {
-                if Task.isCancelled { throw CancellationError() }
-                let data = try handle.read(upToCount: TetherCoreInfo.chunkSize) ?? Data()
-                if data.isEmpty { break }
-                var chunk = Header()
-                chunk.op = Op.writeChunk
-                chunk.uploadId = uploadId
-                chunk.offset = offset
-                _ = try await roundTrip(chunk, body: data, timeout: .seconds(30))
-                offset += UInt64(data.count)
-                progress(offset, size)
+            while confirmed < size {
+                while window.count < TetherCoreInfo.transferPipelineDepth, sent < size {
+                    if Task.isCancelled { throw CancellationError() }
+                    let data = try handle.read(upToCount: TetherCoreInfo.chunkSize) ?? Data()
+                    if data.isEmpty { break }
+                    let offset = sent
+                    sent += UInt64(data.count)
+                    let count = data.count
+                    window.append((count, Task {
+                        var chunk = Header()
+                        chunk.op = Op.writeChunk
+                        chunk.uploadId = uploadId
+                        chunk.offset = offset
+                        _ = try await self.roundTrip(chunk, body: data, timeout: .seconds(30))
+                    }))
+                }
+                if window.isEmpty { break }
+                let head = window.removeFirst()
+                try await head.task.value
+                confirmed += UInt64(head.count)
+                progress(confirmed, size)
             }
             var commit = Header()
             commit.op = Op.writeCommit

@@ -120,25 +120,14 @@ struct HostsView: View {
                     .padding(.vertical, 4)
                 }
             }
-            if !store.discovered.isEmpty {
+            if !unpairedNearby.isEmpty {
                 Section(L10n.nearby) {
-                    ForEach(store.discovered) { host in
+                    ForEach(unpairedNearby) { host in
                         HStack {
                             Label(host.name, systemImage: "laptopcomputer")
                             Spacer()
-                            if let saved = store.paired.first(where: { host.matches(savedHostId: $0.id) }) {
-                                Button("Connect") {
-                                    Task { await store.connect(saved) }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(Color.tether.accent)
-                            } else {
-                                Button(L10n.pair) {
-                                    store.showPairing = true
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(Color.tether.accent)
-                            }
+                            Button(L10n.pair) { store.showPairing = true }
+                                .buttonStyle(.bordered)
                         }
                         .frame(minHeight: 44)
                     }
@@ -150,16 +139,26 @@ struct HostsView: View {
                         Button {
                             Task { await store.connect(host) }
                         } label: {
-                            HStack {
+                            HStack(spacing: 12) {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(host.name)
                                         .font(.body)
                                         .foregroundStyle(.primary)
-                                    StatusDot(title: status(for: host), color: color(for: host))
+                                    if store.connectingName == host.name {
+                                        Text(L10n.connecting)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    } else {
+                                        StatusDot(title: status(for: host), color: color(for: host))
+                                    }
                                 }
                                 Spacer()
+                                if store.connectingName == host.name {
+                                    ProgressView()
+                                }
                             }
                         }
+                        .disabled(store.connectingName != nil)
                         .frame(minHeight: 44)
                         .swipeActions {
                             Button("Forget", role: .destructive) { store.forget(host) }
@@ -203,6 +202,12 @@ struct HostsView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var unpairedNearby: [DiscoveredHost] {
+        store.discovered.filter { host in
+            !store.paired.contains { host.matches(savedHostId: $0.id) }
+        }
     }
 
     private func status(for host: PairedItem) -> String {

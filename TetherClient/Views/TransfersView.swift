@@ -15,17 +15,14 @@ struct TransfersView: View {
                 if !store.activeTransfers.isEmpty {
                     Section("Active") {
                         ForEach(store.activeTransfers) { item in
-                            TransferRow(item: item)
-                                .swipeActions {
-                                    Button("Cancel", role: .destructive) { store.cancel(item) }
-                                }
+                            TransferRow(item: item, onCancel: { store.cancel(item) }, onOpen: nil)
                         }
                     }
                 }
                 if !store.finishedTransfers.isEmpty {
                     Section("Completed") {
                         ForEach(store.finishedTransfers) { item in
-                            TransferRow(item: item)
+                            TransferRow(item: item, onCancel: nil, onOpen: { store.showPreview(item) })
                                 .swipeActions {
                                     if item.state == .failed {
                                         Button("Retry") { Task { await store.retry(item) } }
@@ -48,6 +45,8 @@ struct TransfersView: View {
 
 struct TransferRow: View {
     var item: TransferItem
+    var onCancel: (() -> Void)?
+    var onOpen: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -66,8 +65,16 @@ struct TransferRow: View {
                     .foregroundStyle(item.state == .failed ? Color.tether.danger : .secondary)
                     .monospacedDigit()
             }
+            if item.state == .active, let onCancel {
+                Button("Cancel", role: .destructive, action: onCancel)
+                    .buttonStyle(.bordered)
+            }
         }
         .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if item.state == .completed { onOpen?() }
+        }
         .accessibilityElement(children: .combine)
     }
 

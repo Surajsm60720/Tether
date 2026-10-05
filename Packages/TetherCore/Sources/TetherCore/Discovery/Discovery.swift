@@ -22,9 +22,21 @@ public struct DiscoveredHost: Identifiable, Sendable, Hashable {
 }
 
 public enum TetherLink {
+    /// Local path only. Cellular is prohibited so a file never detours onto the public internet.
+    /// TCP delayed-ACK is off and the service class asks Wi-Fi for low-latency, high-throughput treatment.
     public static func parameters(peerToPeer: Bool = true) -> NWParameters {
-        let parameters = NWParameters.tcp
+        let tcp = NWProtocolTCP.Options()
+        tcp.noDelay = true
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = 10
+        tcp.keepaliveInterval = 5
+        tcp.keepaliveCount = 3
+        let parameters = NWParameters(tls: nil, tcp: tcp)
         parameters.includePeerToPeer = peerToPeer
+        parameters.serviceClass = .responsiveData
+        parameters.multipathServiceType = .disabled
+        parameters.prohibitedInterfaceTypes = [.cellular]
+        parameters.preferNoProxies = true
         return parameters
     }
 

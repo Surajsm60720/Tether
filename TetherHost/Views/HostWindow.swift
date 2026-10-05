@@ -10,7 +10,7 @@ enum HostPage: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .overview: "Overview"
+        case .overview: "Status"
         case .folders: "Shared folders"
         case .phones: "iPhones"
         case .activity: "Activity"
@@ -52,8 +52,10 @@ struct HostWindow: View {
                                 showPairing = true
                             }
                         }
-                        ToolbarItem(placement: .automatic) {
-                            Button(L10n.addFolder) { store.addFolder() }
+                        if page == .folders {
+                            ToolbarItem(placement: .automatic) {
+                                Button(L10n.addFolder) { store.addFolder() }
+                            }
                         }
                     }
             }
@@ -93,87 +95,61 @@ struct HostWindow: View {
     }
 
     private var overview: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                statusCard
-                if store.shares.isEmpty {
-                    emptyFolders
+        Form {
+            Section {
+                LabeledContent("Sharing") {
+                    Text(store.statusText)
+                        .foregroundStyle(.secondary)
                 }
-                if !store.connected.isEmpty {
-                    connectedList
+                LabeledContent("Network") {
+                    Text(store.networkLine)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
                 }
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .background(Color(.windowBackgroundColor))
-    }
-
-    private var statusCard: some View {
-        HStack(alignment: .top, spacing: 16) {
-            Image(systemName: store.statusSymbol)
-                .font(.system(size: 36))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Color.tether.accentText)
-                .frame(width: 56, height: 56)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(store.statusText)
-                    .font(.title2)
-                Text(store.networkLine)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
+                Toggle("Sharing", isOn: Binding(
+                    get: { store.sharingEnabled },
+                    set: { store.setSharing($0) }
+                ))
                 if let stale = store.staleMessage {
                     Text(stale)
-                        .font(.callout)
                         .foregroundStyle(Color.tether.warning)
                 }
             }
-            Spacer()
-            Toggle("Sharing", isOn: Binding(
-                get: { store.sharingEnabled },
-                set: { store.setSharing($0) }
-            ))
-            .toggleStyle(.switch)
-        }
-        .padding(20)
-        .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private var emptyFolders: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.welcomeTitle)
-                .font(.title2)
-            Text(L10n.welcomeBody)
-                .font(.body)
-                .foregroundStyle(.secondary)
-            Button(L10n.addFolder) { store.addFolder() }
-                .buttonStyle(.borderedProminent)
-                .tint(Color.tether.accent)
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private var connectedList: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(L10n.connectedDevices)
-                .font(.headline)
-            ForEach(store.connected) { device in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(device.name)
-                        Text(device.since, style: .relative)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
+            Section(L10n.connectedDevices) {
+                if store.connected.isEmpty {
+                    Text("No iPhone is connected.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(store.connected) { device in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(device.name)
+                                Text(device.since, style: .relative)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                            Spacer()
+                            Button(L10n.disconnect) { store.disconnect(device) }
+                        }
                     }
-                    Spacer()
-                    Button(L10n.disconnect) { store.disconnect(device) }
                 }
-                .frame(minHeight: 44)
+            }
+            Section {
+                if store.shares.isEmpty {
+                    Text(L10n.welcomeBody)
+                        .foregroundStyle(.secondary)
+                    Button(L10n.addFolder) { store.addFolder() }
+                } else {
+                    ForEach(store.shares) { share in
+                        LabeledContent(share.name, value: share.writable ? L10n.canUpload : L10n.readOnly)
+                    }
+                }
+            } header: {
+                Text(L10n.sharedFolders)
             }
         }
+        .formStyle(.grouped)
     }
 
     private var folders: some View {

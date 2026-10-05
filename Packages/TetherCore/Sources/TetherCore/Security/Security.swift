@@ -294,13 +294,10 @@ public struct PairingPayload: Sendable {
 }
 
 /// Keychain items are device-local and available after the first unlock. They are not synced.
+/// On the Mac they live in the data protection keychain, so opening the app does not ask for the login keychain password.
 public enum KeychainStore {
     public static func save(service: String, account: String, data: Data) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+        let query = baseQuery(service: service, account: account)
         SecItemDelete(query as CFDictionary)
         var add = query
         add[kSecValueData as String] = data
@@ -312,13 +309,9 @@ public enum KeychainStore {
     }
 
     public static func load(service: String, account: String) throws -> Data? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
+        var query = baseQuery(service: service, account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
@@ -329,12 +322,20 @@ public enum KeychainStore {
     }
 
     public static func delete(service: String, account: String) {
-        let query: [String: Any] = [
+        SecItemDelete(baseQuery(service: service, account: account) as CFDictionary)
+    }
+
+    private static func baseQuery(service: String, account: String) -> [String: Any] {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: false,
         ]
-        SecItemDelete(query as CFDictionary)
+        #if os(macOS)
+        query[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        return query
     }
 }
 

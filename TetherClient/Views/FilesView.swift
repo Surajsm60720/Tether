@@ -6,15 +6,22 @@ import UniformTypeIdentifiers
 
 struct SessionView: View {
     @Bindable var store: ClientStore
+    @State private var savedMessage: String?
 
     var body: some View {
         VStack(spacing: 0) {
             if store.reconnecting || store.offline {
-                Text(store.reconnecting ? "Reconnecting…" : (store.statusMessage ?? "Connection lost. Reconnecting…"))
-                    .font(.footnote)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(Color.tether.warning.opacity(0.18))
+                HStack(spacing: 8) {
+                    Image(systemName: store.reconnecting ? "antenna.radiowaves.left.and.right" : "wifi.slash")
+                        .symbolRenderingMode(.hierarchical)
+                    Text(store.reconnecting ? "Reconnecting…" : (store.statusMessage ?? "Connection lost. Reconnecting…"))
+                        .font(.footnote)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(.bar)
             }
             TabView(selection: $store.sessionTab) {
                 FilesView(store: store)
@@ -27,6 +34,34 @@ struct SessionView: View {
                     .tag(2)
                     .tabItem { Label(L10n.transfers, systemImage: "arrow.up.arrow.down.circle") }
             }
+        }
+        .sheet(item: $store.preview) { item in
+            NavigationStack {
+                QuickLookPreview(url: item.url, title: item.title)
+                    .ignoresSafeArea()
+                    .navigationTitle(item.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            ShareLink(item: item.url)
+                        }
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { store.preview = nil }
+                        }
+                        ToolbarItem(placement: .bottomBar) {
+                            Button("Save to Files") {
+                                if (try? store.saveToDocuments(item.url)) != nil {
+                                    savedMessage = "Saved \(item.title) to the Files app."
+                                }
+                            }
+                        }
+                    }
+            }
+        }
+        .alert("Saved", isPresented: Binding(get: { savedMessage != nil }, set: { if !$0 { savedMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(savedMessage ?? "")
         }
     }
 }
@@ -52,42 +87,24 @@ struct FilesView: View {
                 }
             }
             .navigationTitle(store.folderTitle)
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(store.path == "/" ? .large : .inline)
             .searchable(text: $store.searchText, prompt: "Filter")
             .toolbar { toolbar }
             .refreshable { try? await store.refresh() }
-            .safeAreaInset(edge: .top) { banners }
+        }
+        .sheet(item: $store.fileInfo) { info in
+            NavigationStack {
+                FileInfoView(info: info)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { store.fileInfo = nil }
+                        }
+                    }
+            }
+            .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showSettings) {
             NavigationStack { SettingsView(store: store) }
-        }
-        .sheet(isPresented: Binding(
-            get: { store.previewURL != nil },
-            set: { if !$0 { store.previewURL = nil } }
-        )) {
-            if let url = store.previewURL {
-                NavigationStack {
-                    QuickLookPreview(url: url)
-                        .ignoresSafeArea()
-                        .navigationTitle(url.lastPathComponent)
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            ToolbarItem(placement: .confirmationAction) {
-                                ShareLink(item: url)
-                            }
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Close") { store.previewURL = nil }
-                            }
-                            ToolbarItem(placement: .bottomBar) {
-                                Button("Save to Files") {
-                                    if let saved = try? store.saveToDocuments(url) {
-                                        savedMessage = "Saved to \(saved.lastPathComponent) in the Files app."
-                                    }
-                                }
-                            }
-                        }
-                }
-            }
         }
         .alert("Saved", isPresented: Binding(get: { savedMessage != nil }, set: { if !$0 { savedMessage = nil } })) {
             Button("OK", role: .cancel) {}
@@ -167,23 +184,11 @@ struct FilesView: View {
                         Task { await store.go(to: ancestor) }
                     }
                 }
-                Divider()
-                Button(L10n.settings) { showSettings = true }
-                Button("Disconnect") { store.disconnect() }
             } label: {
-                HStack(spacing: 6) {
-                    if store.demoMode {
-                        Text(L10n.demo)
-                            .font(.caption)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.tether.accent.opacity(0.2), in: Capsule())
-                    }
-                    Text(store.folderTitle)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
+                Text(store.folderTitle)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
         ToolbarItem(placement: .topBarLeading) {
@@ -192,21 +197,24 @@ struct FilesView: View {
             }
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
-            Button {
-                store.grid.toggle()
-                UISelectionFeedbackGenerator().selectionChanged()
-            } label: {
-                Image(systemName: store.grid ? "list.bullet" : "square.grid.2x2")
-            }
-            .accessibilityLabel(store.grid ? "List" : "Grid")
             Menu {
+                Button(store.grid ? "List" : "Icons", systemImage: store.grid ? "list.bullet" : "square.grid.2x2") {
+                    store.grid.toggle()
+                    UISelectionFeedbackGenerator().selectionChanged()
+                }
                 Picker("Sort", selection: $store.sort) {
                     ForEach(FileSort.allCases) { item in
                         Text(item.title).tag(item)
                     }
                 }
+                if store.demoMode {
+                    Text(L10n.demo)
+                }
+                Divider()
+                Button(L10n.settings) { showSettings = true }
+                Button("Disconnect") { store.disconnect() }
             } label: {
-                Image(systemName: "arrow.up.arrow.down")
+                Image(systemName: "ellipsis.circle")
             }
             Menu {
                 PhotosPicker(selection: $picker, matching: .any(of: [.images, .videos])) {
@@ -220,35 +228,6 @@ struct FilesView: View {
         }
     }
 
-    @ViewBuilder
-    private var banners: some View {
-        if store.offline {
-            banner(store.statusMessage ?? L10n.unreachable(store.hostName), symbol: "wifi.slash", color: Color.tether.warning) {
-                if let host = store.paired.first(where: { $0.id == store.hostId }) {
-                    Task { await store.connect(host) }
-                }
-            }
-        } else if store.reconnecting {
-            Text("Reconnecting…")
-                .font(.caption)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(.thinMaterial, in: Capsule())
-                .padding(.top, 4)
-        }
-    }
-
-    private func banner(_ text: String, symbol: String, color: Color, retry: @escaping () -> Void) -> some View {
-        HStack {
-            Image(systemName: symbol)
-            Text(text).font(.footnote)
-            Spacer()
-            Button("Retry", action: retry)
-        }
-        .padding(12)
-        .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .padding(.horizontal, 16)
-    }
 }
 
 struct FileRow: View {
@@ -287,14 +266,15 @@ struct FileRow: View {
         .accessibilityLabel(accessibilityText)
         .swipeActions(edge: .leading) {
             if entry.kind != .dir {
-                Button("Download") { Task { await store.download(entry, preview: false) } }
+                Button("Download") { store.download(entry, preview: false) }
                     .tint(Color.tether.accent)
             }
         }
         .contextMenu {
+            Button("Get Info") { store.showInfo(entry) }
             if entry.kind != .dir {
-                Button("Preview") { Task { await store.open(entry) } }
-                Button("Download") { Task { await store.download(entry, preview: false) } }
+                Button("Preview") { store.download(entry, preview: true) }
+                Button("Download") { store.download(entry, preview: false) }
             }
         }
     }
@@ -303,7 +283,7 @@ struct FileRow: View {
         if entry.kind == .dir {
             return "\(entry.name), folder, \(entry.childCount.map(String.init) ?? "") items"
         }
-        return "\(entry.name), \(Format.bytes(entry.size)), modified \(Format.when(entry.modified))"
+        return "\(entry.name), \(Format.kind(entry)), \(Format.bytes(entry.size)), modified \(Format.when(entry.modified, includeTime: true))"
     }
 }
 
@@ -344,6 +324,30 @@ struct FileGridItem: View {
                 image = Image(uiImage: uiImage)
             }
         }
+    }
+}
+
+struct FileInfoView: View {
+    var info: FileInfo
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Name", value: info.entry.name)
+                LabeledContent("Kind", value: Format.kind(info.entry))
+                LabeledContent("Size", value: info.entry.kind == .dir ? (info.entry.childCount.map { "\($0) items" } ?? "Folder") : Format.bytes(info.entry.size))
+                LabeledContent("Modified", value: Format.when(info.entry.modified, includeTime: true))
+            }
+            Section {
+                Text(info.path)
+                    .font(.body)
+                    .textSelection(.enabled)
+            } header: {
+                Text("Where")
+            }
+        }
+        .navigationTitle("Info")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

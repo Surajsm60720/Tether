@@ -8,7 +8,32 @@ enum Format {
         return formatter.string(fromByteCount: Int64(value))
     }
 
-    static func when(_ date: Date) -> String {
+    static func kind(_ entry: FileEntry) -> String {
+        if entry.kind == .dir { return "Folder" }
+        if entry.kind == .link { return "Alias" }
+        let ext = (entry.name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "pdf": return "PDF document"
+        case "jpg", "jpeg": return "JPEG image"
+        case "png": return "PNG image"
+        case "heic": return "HEIC image"
+        case "gif": return "GIF image"
+        case "mp4", "mov", "m4v": return "Movie"
+        case "mp3", "m4a", "wav", "aac": return "Audio"
+        case "zip", "gz", "tar": return "Archive"
+        case "txt", "md", "log": return "Text"
+        case "doc", "docx": return "Word document"
+        case "pages": return "Pages document"
+        case "xls", "xlsx": return "Spreadsheet"
+        case "ppt", "pptx", "key": return "Presentation"
+        default: return ext.isEmpty ? "File" : "\(ext.uppercased()) file"
+        }
+    }
+
+    static func when(_ date: Date, includeTime: Bool) -> String {
+        if includeTime {
+            return date.formatted(date: .abbreviated, time: .shortened)
+        }
         if Calendar.current.isDateInToday(date) { return "Today" }
         if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
         return date.formatted(date: .abbreviated, time: .omitted)
@@ -16,10 +41,10 @@ enum Format {
 
     static func subtitle(_ entry: FileEntry) -> String {
         if entry.kind == .dir {
-            if let count = entry.childCount { return "\(count) items" }
-            return Format.when(entry.modified)
+            if let count = entry.childCount { return "Folder · \(count) items" }
+            return "Folder · \(Format.when(entry.modified, includeTime: false))"
         }
-        return "\(Format.when(entry.modified)) · \(Format.bytes(entry.size))"
+        return "\(kind(entry)) · \(Format.bytes(entry.size)) · \(Format.when(entry.modified, includeTime: false))"
     }
 
     static func symbol(for entry: FileEntry) -> String {

@@ -30,7 +30,8 @@ final class ClientStore {
     var transfers: [TransferItem] = []
     var grid = false
     var sort: FileSort = .name
-    var previewURL: URL?
+    var preview: FilePreview?
+    var fileInfo: FileInfo?
     var pendingLarge: FileEntry?
     var readOnlyAlert = false
     var terminalLines: [TermLine] = []
@@ -43,6 +44,7 @@ final class ClientStore {
     var cacheBytes: Int64 = 0
     var recents: [RecentRecord] = []
     var sessionTab = 0
+    var connectingName: String?
     var searchText = ""
     var requestUpload = false
 
@@ -51,9 +53,9 @@ final class ClientStore {
     private var connection: ClientConnection?
     private var demoFiles: MemoryFileProvider?
     private var lastDownload: URL?
+    private var transferTasks: [UUID: Task<Void, Never>] = [:]
     private var reconnectTask: Task<Void, Never>?
     private var intentionalDisconnect = false
-    private var openingSavedMac = false
     private var activeHost: PairedItem?
     private let deviceID: String
 
@@ -73,7 +75,6 @@ final class ClientStore {
         } else {
             startBrowser()
         }
-        if demoMode { enableDemo() }
     }
 
     static var shared: ClientStore?
@@ -92,7 +93,6 @@ final class ClientStore {
             Task { @MainActor in
                 guard let store = ClientStore.shared else { return }
                 store.discovered = hosts
-                store.connectSavedMacIfVisible()
             }
         }
         browser.onState = { state in
@@ -168,6 +168,8 @@ final class ClientStore {
     }
 
     func connect(_ item: PairedItem, restoring: Bool) async {
+        connectingName = item.name
+        defer { connectingName = nil }
         if demoMode { enableDemo(); return }
         guard let endpoint = await endpoint(for: item.id) else {
             offline = true
@@ -312,24 +314,33 @@ final class ClientStore {
             pendingLarge = entry
             return
         }
-        await download(entry, preview: true)
+        download(entry, preview: true)
     }
 
     func confirmLargeDownload() async {
         guard let entry = pendingLarge else { return }
         pendingLarge = nil
-        await download(entry, preview: true)
+        download(entry, preview: true)
     }
 
-    func download(_ entry: FileEntry, preview: Bool) async {
+    func download(_ entry: FileEntry, preview: Bool) {
         let full = joined(entry.name)
-        var item = TransferItem(name: entry.name, path: full, direction: .down, total: entry.size)
+        let destination = cacheURL(host: hostId, path: full, size: entry.size, mtime: entry.mtime, fileName: entry.name)
+        let item = TransferItem(name: entry.name, path: full, direction: .down, total: entry.size, localURL: destination)
         transfers.insert(item, at: 0)
         let id = item.id
-        let destination = cacheURL(host: hostId, path: full, size: entry.size, mtime: entry.mtime)
+        transferTasks[id] = Task { @MainActor in
+            await self.performDownload(id: id, entry: entry, full: full, destination: destination, preview: preview)
+            self.transferTasks[id] = nil
+        }
+    }
+
+    private func performDownload(id: UUID, entry: FileEntry, full: String, destination: URL, preview: Bool) async {
         do {
+            try Task.checkCancellation()
             if let demoFiles {
                 let chunk = try await demoFiles.read(path: VirtualPath.parse(full), offset: 0, length: Int(max(entry.size, 1)))
+                try Task.checkCancellation()
                 try chunk.data.write(to: destination, options: .atomic)
                 updateTransfer(id, sent: entry.size, total: max(entry.size, 1), state: .completed)
             } else if let connection {
@@ -338,16 +349,24 @@ final class ClientStore {
                         self.updateTransfer(id, sent: sent, total: total, state: .active)
                     }
                 }
-                updateTransfer(id, sent: entry.size, total: max(entry.size, 1), state: .completed)
+                try Task.checkCancellation()
+                updateTransfer(id, sent: max(entry.size, 1), total: max(entry.size, 1), state: .completed)
             }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             remember(full)
             refreshCacheSize()
             lastDownload = destination
-            if preview { previewURL = destination }
+            if preview {
+                self.preview = FilePreview(url: destination, title: entry.name)
+            }
+        } catch is CancellationError {
+            updateTransfer(id, sent: 0, total: entry.size, state: .failed, message: "Cancelled")
         } catch {
-            updateTransfer(id, sent: item.sent, total: item.total, state: .failed, message: (error as? ProtocolFailure)?.message)
-            _ = item
+            if Task.isCancelled {
+                updateTransfer(id, sent: 0, total: entry.size, state: .failed, message: "Cancelled")
+            } else {
+                updateTransfer(id, sent: 0, total: entry.size, state: .failed, message: (error as? ProtocolFailure)?.message)
+            }
         }
     }
 
@@ -362,6 +381,13 @@ final class ClientStore {
         let item = TransferItem(name: name, path: full, direction: .up, total: size)
         transfers.insert(item, at: 0)
         let id = item.id
+        transferTasks[id] = Task { @MainActor in
+            await self.performUpload(id: id, url: url, full: full, name: name, size: size)
+            self.transferTasks[id] = nil
+        }
+    }
+
+    private func performUpload(id: UUID, url: URL, full: String, name: String, size: UInt64) async {
         do {
             if let demoFiles {
                 let data = try Data(contentsOf: url)
@@ -376,8 +402,14 @@ final class ClientStore {
                 updateTransfer(id, sent: size, total: max(size, 1), state: .completed)
             }
             try? await refresh()
+        } catch is CancellationError {
+            updateTransfer(id, sent: 0, total: size, state: .failed, message: "Cancelled")
         } catch {
-            updateTransfer(id, sent: 0, total: size, state: .failed, message: (error as? ProtocolFailure)?.message)
+            if Task.isCancelled {
+                updateTransfer(id, sent: 0, total: size, state: .failed, message: "Cancelled")
+            } else {
+                updateTransfer(id, sent: 0, total: size, state: .failed, message: (error as? ProtocolFailure)?.message)
+            }
         }
     }
 
@@ -388,15 +420,23 @@ final class ClientStore {
             transfers[index].state = .active
         }
         if item.direction == .down, let entry = entries.first(where: { $0.name == item.name }) {
-            await download(entry, preview: false)
+            download(entry, preview: false)
         }
     }
 
     func cancel(_ item: TransferItem) {
-        if let index = transfers.firstIndex(where: { $0.id == item.id }) {
-            transfers[index].state = .failed
-            transfers[index].message = "Cancelled"
-        }
+        transferTasks[item.id]?.cancel()
+        transferTasks[item.id] = nil
+        updateTransfer(item.id, sent: item.sent, total: item.total, state: .failed, message: "Cancelled")
+    }
+
+    func showPreview(_ item: TransferItem) {
+        guard let url = item.localURL, item.state == .completed else { return }
+        preview = FilePreview(url: url, title: item.name)
+    }
+
+    func showInfo(_ entry: FileEntry) {
+        fileInfo = FileInfo(entry: entry, path: joined(entry.name))
     }
 
     func clearCompleted() {
@@ -584,19 +624,6 @@ final class ClientStore {
         }
     }
 
-    func connectSavedMacIfVisible() {
-        guard !connected, !openingSavedMac, !showPairing, !demoMode, !intentionalDisconnect, connection == nil else { return }
-        let candidate = paired
-            .sorted { ($0.lastConnectedAt ?? .distantPast) > ($1.lastConnectedAt ?? .distantPast) }
-            .first { host in discovered.contains { $0.matches(savedHostId: host.id) } }
-        guard let candidate else { return }
-        openingSavedMac = true
-        Task {
-            await connect(candidate, restoring: true)
-            openingSavedMac = false
-        }
-    }
-
     private func endpoint(for id: String) async -> NWEndpoint? {
         func found() -> NWEndpoint? {
             if let match = discovered.first(where: { $0.matches(savedHostId: id) }) {
@@ -629,6 +656,7 @@ final class ClientStore {
 
     private func updateTransfer(_ id: UUID, sent: UInt64, total: UInt64, state: TransferState, message: String? = nil) {
         guard let index = transfers.firstIndex(where: { $0.id == id }) else { return }
+        if transfers[index].message == "Cancelled", state == .active { return }
         transfers[index].sent = sent
         transfers[index].total = total
         transfers[index].state = state
@@ -711,14 +739,14 @@ final class ClientStore {
         reloadPaired()
     }
 
-    private func cacheURL(host: String, path: String, size: UInt64, mtime: TimeInterval) -> URL {
+    private func cacheURL(host: String, path: String, size: UInt64, mtime: TimeInterval, fileName: String) -> URL {
         let key = "\(host)|\(path)|\(size)|\(mtime)"
         let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
-        let ext = (path as NSString).pathExtension
-        let name = ext.isEmpty ? digest : "\(digest).\(ext)"
-        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        let folder = cacheDirectory.appendingPathComponent(digest, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         evictIfNeeded()
-        return cacheDirectory.appendingPathComponent(name)
+        let safe = (fileName as NSString).lastPathComponent
+        return folder.appendingPathComponent(safe.isEmpty ? "File" : safe)
     }
 
     private var cacheDirectory: URL {
@@ -751,8 +779,18 @@ final class ClientStore {
     }
 
     private func directorySize(_ url: URL) -> Int64 {
-        let urls = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey])) ?? []
-        return urls.reduce(0) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in enumerator {
+            let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            if values?.isRegularFile == true {
+                total += Int64(values?.fileSize ?? 0)
+            }
+        }
+        return total
     }
 
     private static let service = "app.tether.client"

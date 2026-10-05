@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import TetherCore
 
 @Model
 final class PairedHostRecord {
@@ -66,11 +67,24 @@ struct TransferItem: Identifiable, Equatable {
     var started = Date()
     var retries = 0
     var message: String?
+    var localURL: URL?
 
     var fraction: Double {
         guard total > 0 else { return 0 }
         return min(1, Double(sent) / Double(total))
     }
+}
+
+struct FilePreview: Identifiable, Equatable {
+    var url: URL
+    var title: String
+    var id: String { url.path }
+}
+
+struct FileInfo: Identifiable, Equatable {
+    var entry: FileEntry
+    var path: String
+    var id: String { path }
 }
 
 struct TermLine: Identifiable, Equatable {

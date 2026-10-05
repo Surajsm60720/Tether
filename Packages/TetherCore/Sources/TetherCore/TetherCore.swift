@@ -9,8 +9,10 @@ public enum TetherCoreInfo: Sendable {
     public static let protocolVersion = 1
     /// Bonjour service type. The leading and trailing underscores are required.
     public static let serviceType = "_tether._tcp"
-    /// Default file chunk size. Offsets are 64-bit so larger files can resume later.
-    public static let chunkSize = 256 * 1024
+    /// Bulk transfer chunk. Large enough to fill a fast Wi-Fi link, still under the 1 MiB frame cap.
+    public static let chunkSize = 768 * 1024
+    /// How many chunk requests stay in flight so the link stays full instead of waiting on each reply.
+    public static let transferPipelineDepth = 8
     /// Largest sealed frame accepted on the wire.
     public static let maxFrameBytes = 1 << 20
 }

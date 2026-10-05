@@ -24,15 +24,17 @@ struct TerminalScreen: View {
                                 .textSelection(.enabled)
                                 .id(line.id)
                         }
-                        promptRow
-                            .id("prompt")
                     }
                     .padding(12)
                 }
+                .scrollDismissesKeyboard(.never)
                 .onChange(of: store.terminalLines.count) { _, _ in
-                    proxy.scrollTo("prompt", anchor: .bottom)
+                    if let last = store.terminalLines.last?.id {
+                        proxy.scrollTo(last, anchor: .bottom)
+                    }
                 }
             }
+            promptRow
             AccessoryKeyRow { token in
                 apply(token)
             }
@@ -88,15 +90,26 @@ struct TerminalScreen: View {
             Text(store.prompt)
                 .font(font)
                 .foregroundStyle(TerminalTheme.standard.prompt)
-            TextField("", text: $draft)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            TextField("", text: $draft, axis: .horizontal)
                 .font(font)
                 .foregroundStyle(TerminalTheme.standard.fg)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .focused($focused)
-                .onSubmit { submit() }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .onSubmit {
+                    submit()
+                    focused = true
+                }
             TerminalCursor(height: store.fontSize, animate: !reduceMotion)
+                .allowsHitTesting(false)
         }
+        .padding(.horizontal, 12)
+        .contentShape(Rectangle())
+        .onTapGesture { focused = true }
+        .background(TerminalTheme.standard.bg)
     }
 
     private var font: Font {
@@ -139,6 +152,7 @@ struct TerminalScreen: View {
             draft.append(token)
         }
         focused = true
+        DispatchQueue.main.async { focused = true }
     }
 
     private var suggested: String {
@@ -160,6 +174,7 @@ struct AccessoryKeyRow: View {
             HStack(spacing: 8) {
                 ForEach(keys, id: \.self) { key in
                     Button(key) { onKey(key) }
+                        .buttonStyle(.plain)
                         .font(.system(.body, design: .monospaced))
                         .frame(minWidth: 44, minHeight: 44)
                         .overlay {

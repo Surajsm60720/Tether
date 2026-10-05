@@ -3,6 +3,7 @@ import SwiftUI
 
 struct QuickLookPreview: UIViewControllerRepresentable {
     let url: URL
+    let title: String
 
     func makeUIViewController(context: Context) -> QLPreviewController {
         let controller = QLPreviewController()
@@ -11,18 +12,28 @@ struct QuickLookPreview: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: QLPreviewController, context: Context) {
-        context.coordinator.url = url
+        context.coordinator.item = NamedPreviewItem(url: url, title: title)
         controller.reloadData()
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(url: url) }
+    func makeCoordinator() -> Coordinator { Coordinator(url: url, title: title) }
 
     final class Coordinator: NSObject, QLPreviewControllerDataSource {
-        var url: URL
-        init(url: URL) { self.url = url }
+        var item: NamedPreviewItem
+        init(url: URL, title: String) { item = NamedPreviewItem(url: url, title: title) }
         func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
         func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> any QLPreviewItem {
-            url as NSURL
+            item
         }
+    }
+}
+
+final class NamedPreviewItem: NSObject, QLPreviewItem {
+    let previewItemURL: URL?
+    let previewItemTitle: String?
+
+    init(url: URL, title: String) {
+        previewItemURL = url
+        previewItemTitle = title
     }
 }
