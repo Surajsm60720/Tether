@@ -1,0 +1,81 @@
+import SwiftUI
+
+struct TransfersView: View {
+    @Bindable var store: ClientStore
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if scenePhase != .active && !store.activeTransfers.isEmpty {
+                    Text(L10n.keepOpen)
+                        .font(.footnote)
+                        .foregroundStyle(Color.tether.warning)
+                }
+                if !store.activeTransfers.isEmpty {
+                    Section("Active") {
+                        ForEach(store.activeTransfers) { item in
+                            TransferRow(item: item)
+                                .swipeActions {
+                                    Button("Cancel", role: .destructive) { store.cancel(item) }
+                                }
+                        }
+                    }
+                }
+                if !store.finishedTransfers.isEmpty {
+                    Section("Completed") {
+                        ForEach(store.finishedTransfers) { item in
+                            TransferRow(item: item)
+                                .swipeActions {
+                                    if item.state == .failed {
+                                        Button("Retry") { Task { await store.retry(item) } }
+                                    }
+                                }
+                        }
+                    }
+                }
+                if store.transfers.isEmpty {
+                    ContentUnavailableView("No transfers", systemImage: "arrow.up.arrow.down")
+                }
+            }
+            .navigationTitle(L10n.transfers)
+            .toolbar {
+                Button("Clear") { store.clearCompleted() }
+            }
+        }
+    }
+}
+
+struct TransferRow: View {
+    var item: TransferItem
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: item.direction == .down ? "arrow.down.circle" : "arrow.up.circle")
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(item.state == .failed ? Color.tether.danger : Color.tether.accentText)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.name)
+                    .font(.body)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                ProgressView(value: item.fraction)
+                    .tint(item.state == .failed ? Color.tether.danger : Color.tether.accent)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(item.state == .failed ? Color.tether.danger : .secondary)
+                    .monospacedDigit()
+            }
+        }
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var detail: String {
+        if item.state == .failed { return item.message ?? "Failed · Retry" }
+        if item.state == .completed { return "Done" }
+        let rate = Format.speed(bytes: item.sent, since: item.started)
+        let eta = Format.eta(sent: item.sent, total: item.total, since: item.started)
+        return eta.isEmpty ? rate : "\(rate) · \(eta)"
+    }
+}
