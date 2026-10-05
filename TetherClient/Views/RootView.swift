@@ -171,6 +171,11 @@ struct HostsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            Section {
+                Text("This iPhone shows up on your Mac as \(store.deviceName). Change it in Settings.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -196,8 +201,6 @@ struct HostsView: View {
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button(L10n.pairWithCode) { store.showPairing = true }
-                    .buttonStyle(.bordered)
             }
         }
         .padding(24)

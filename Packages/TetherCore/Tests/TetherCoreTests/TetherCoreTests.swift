@@ -10,9 +10,26 @@ import Testing
     #expect(!BonjourHostID.matches(discoveredId: "other", serviceName: "Tether-other", savedId: "abcd1234"))
 }
 
+@Test func phoneServiceNameResolvesDeviceId() {
+    let id = "11111111-2222-3333-4444-555555555555"
+    #expect(BonjourHostID.resolve(serviceName: "Phone-\(id)", txtId: nil) == id)
+    #expect(BonjourHostID.matches(discoveredId: id, serviceName: "Phone-\(id)", savedId: id))
+}
+
+@Test func dialFrameRoundTrip() throws {
+    let frame = try SessionDial.encode(hostId: "abcd1234", hostName: "Cedar Studio")
+    var decoder = FrameDecoder()
+    decoder.append(frame)
+    let payload = try #require(try decoder.pop())
+    let dial = try SessionDial.decode(payload)
+    #expect(dial.hostId == "abcd1234")
+    #expect(dial.hostName == "Cedar Studio")
+}
+
 @Test func protocolVersionIsOne() {
     #expect(TetherCoreInfo.protocolVersion == 1)
     #expect(TetherCoreInfo.serviceType == "_tether._tcp")
+    #expect(TetherCoreInfo.phoneServiceType == "_tether-phone._tcp")
 }
 
 @Test func virtualPathRejectsEscapes() throws {

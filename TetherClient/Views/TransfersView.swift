@@ -3,10 +3,11 @@ import SwiftUI
 struct TransfersView: View {
     @Bindable var store: ClientStore
     @Environment(\.scenePhase) private var scenePhase
+    @State private var selection = Set<UUID>()
 
     var body: some View {
         NavigationStack {
-            List {
+            List(selection: $selection) {
                 if scenePhase != .active && !store.activeTransfers.isEmpty {
                     Text(L10n.keepOpen)
                         .font(.footnote)
@@ -23,7 +24,9 @@ struct TransfersView: View {
                     Section("Completed") {
                         ForEach(store.finishedTransfers) { item in
                             TransferRow(item: item, onCancel: nil, onOpen: { store.showPreview(item) })
+                                .tag(item.id)
                                 .swipeActions {
+                                    Button("Remove", role: .destructive) { store.removeTransfer(item) }
                                     if item.state == .failed {
                                         Button("Retry") { Task { await store.retry(item) } }
                                     }
@@ -37,7 +40,16 @@ struct TransfersView: View {
             }
             .navigationTitle(L10n.transfers)
             .toolbar {
-                Button("Clear") { store.clearCompleted() }
+                EditButton()
+                if selection.isEmpty {
+                    Button("Clear all") { store.clearCompleted() }
+                        .disabled(store.finishedTransfers.isEmpty)
+                } else {
+                    Button("Clear selected") {
+                        store.removeTransfers(selection)
+                        selection.removeAll()
+                    }
+                }
             }
         }
     }

@@ -33,6 +33,7 @@ struct HostWindow: View {
     @State private var showPairing = false
     @State private var pendingRevoke: DeviceItem?
     @State private var filter = ""
+    @State private var nameDraft = ""
 
     var body: some View {
         NavigationSplitView {
@@ -50,11 +51,6 @@ struct HostWindow: View {
                             Button(L10n.pair) {
                                 store.beginPairing()
                                 showPairing = true
-                            }
-                        }
-                        if page == .folders {
-                            ToolbarItem(placement: .automatic) {
-                                Button(L10n.addFolder) { store.addFolder() }
                             }
                         }
                     }
@@ -97,6 +93,22 @@ struct HostWindow: View {
     private var overview: some View {
         Form {
             Section {
+                TextField("Name on iPhone", text: $nameDraft)
+                    .onSubmit { store.setName(nameDraft) }
+                HStack {
+                    Button("Save name") { store.setName(nameDraft) }
+                    Button("Random name") {
+                        let generated = FriendlyName.make()
+                        nameDraft = generated
+                        store.setName(generated)
+                    }
+                }
+            } header: {
+                Text("Name")
+            } footer: {
+                Text("The iPhone uses this name to tell your Mac apart. Save it, or pick a short random name.")
+            }
+            Section {
                 LabeledContent("Sharing") {
                     Text(store.statusText)
                         .foregroundStyle(.secondary)
@@ -137,9 +149,8 @@ struct HostWindow: View {
             }
             Section {
                 if store.shares.isEmpty {
-                    Text(L10n.welcomeBody)
+                    Text("No folders yet. Add one from Shared folders.")
                         .foregroundStyle(.secondary)
-                    Button(L10n.addFolder) { store.addFolder() }
                 } else {
                     ForEach(store.shares) { share in
                         LabeledContent(share.name, value: share.writable ? L10n.canUpload : L10n.readOnly)
@@ -150,6 +161,8 @@ struct HostWindow: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { nameDraft = store.macName }
+        .onChange(of: store.macName) { _, name in nameDraft = name }
     }
 
     private var folders: some View {
@@ -163,12 +176,13 @@ struct HostWindow: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
-                    TableColumn("Access") { share in
-                        Toggle(share.writable ? L10n.canUpload : L10n.readOnly, isOn: Binding(
+                    TableColumn("Allow uploads") { share in
+                        Toggle("Allow uploads", isOn: Binding(
                             get: { share.writable },
                             set: { store.setWritable(share, $0) }
                         ))
                         .toggleStyle(.checkbox)
+                        .labelsHidden()
                     }
                     TableColumn("") { share in
                         Button("Remove", role: .destructive) { store.remove(share) }
@@ -176,9 +190,11 @@ struct HostWindow: View {
                     .width(90)
                 }
             }
-            HStack {
+            VStack(alignment: .leading, spacing: 8) {
                 Button(L10n.addFolder) { store.addFolder() }
-                Spacer()
+                Text("Turn on Allow uploads when the iPhone should add files. Leave it off and the iPhone can only look at and download files.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 12)
@@ -187,10 +203,45 @@ struct HostWindow: View {
 
     private var phones: some View {
         List {
-            if store.devices.isEmpty {
-                ContentUnavailableView("No iPhones paired yet", systemImage: "iphone", description: Text("Pair an iPhone to browse the folders you share."))
+            Section {
+                if store.nearbyPhones.isEmpty {
+                    Text("Open Tether on the iPhone. It will show up here while the app is open.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(store.nearbyPhones) { phone in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(phone.name)
+                            Text(store.devices.contains { phone.matches(savedHostId: $0.id) } ? "Paired" : "Not paired yet")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if store.devices.contains(where: { phone.matches(savedHostId: $0.id) }) {
+                            Button("Connect") { store.connect(phone: phone) }
+                        } else {
+                            Button("Pair") {
+                                store.beginPairing()
+                                showPairing = true
+                            }
+                        }
+                    }
+                    .frame(minHeight: 44)
+                }
+                if let phoneStatus = store.phoneStatus {
+                    Text(phoneStatus)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("On this network")
             }
-            ForEach(store.devices) { device in
+            Section {
+                if store.devices.isEmpty {
+                    Text("No iPhones paired yet. Pair from the iPhone, then connect from here too.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(store.devices) { device in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(device.name)
@@ -207,6 +258,9 @@ struct HostWindow: View {
                     Button(L10n.revoke, role: .destructive) { pendingRevoke = device }
                 }
                 .frame(minHeight: 44)
+                }
+            } header: {
+                Text("Paired")
             }
         }
     }

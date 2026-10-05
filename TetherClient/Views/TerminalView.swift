@@ -66,6 +66,8 @@ struct TerminalScreen: View {
             Text(store.hostName)
                 .font(.caption)
                 .foregroundStyle(TerminalTheme.standard.fg)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Text(store.terminalCWD)
                 .font(.caption)
                 .foregroundStyle(TerminalTheme.standard.dir)

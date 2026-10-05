@@ -9,6 +9,8 @@ public enum TetherCoreInfo: Sendable {
     public static let protocolVersion = 1
     /// Bonjour service type. The leading and trailing underscores are required.
     public static let serviceType = "_tether._tcp"
+    /// Bonjour type the iPhone advertises so the Mac can find it.
+    public static let phoneServiceType = "_tether-phone._tcp"
     /// Bulk transfer chunk. Large enough to fill a fast Wi-Fi link, still under the 1 MiB frame cap.
     public static let chunkSize = 768 * 1024
     /// How many chunk requests stay in flight so the link stays full instead of waiting on each reply.

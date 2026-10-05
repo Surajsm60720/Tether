@@ -7,6 +7,7 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_tether._tcp</string>
+		<string>_tether-phone._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Tether uses the camera to scan the pairing code on your Mac.</string>

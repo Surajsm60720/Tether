@@ -50,6 +50,7 @@ final class ClientStore {
 
     private let context: ModelContext
     private let browser = TetherBrowser()
+    private let phoneListener = TetherListener()
     private var connection: ClientConnection?
     private var demoFiles: MemoryFileProvider?
     private var lastDownload: URL?
@@ -93,6 +94,7 @@ final class ClientStore {
             Task { @MainActor in
                 guard let store = ClientStore.shared else { return }
                 store.discovered = hosts
+                store.applyDiscoveredNames(hosts)
             }
         }
         browser.onState = { state in
@@ -108,6 +110,64 @@ final class ClientStore {
             }
         }
         browser.start()
+        startPhoneListener()
+    }
+
+    func startPhoneListener() {
+        phoneListener.onConnection = { connection in
+            let stream = NWByteStream(connection: connection)
+            Task { @MainActor in
+                await ClientStore.shared?.acceptDial(stream)
+            }
+        }
+        do {
+            try phoneListener.start(
+                name: deviceName,
+                hostId: deviceID,
+                serviceType: TetherCoreInfo.phoneServiceType,
+                namePrefix: "Phone"
+            )
+        } catch {
+            TetherLog.discovery.debug("phone advertisement failed")
+        }
+    }
+
+    func acceptDial(_ stream: NWByteStream) async {
+        do {
+            try await stream.start()
+            let dial = try SessionDial.decode(try await FrameReader(stream: stream).nextPayload())
+            guard let keyData = try? KeychainStore.load(service: Self.service, account: "host.\(dial.hostId)") else {
+                await stream.close()
+                return
+            }
+            let session = try await ClientConnection.establish(
+                stream: stream,
+                deviceId: deviceID,
+                deviceName: deviceName,
+                mode: .session(hostId: dial.hostId, key: SymmetricKey(data: keyData))
+            )
+            await session.setDisconnectHandler { [weak self] in
+                Task { @MainActor in self?.handleDisconnect() }
+            }
+            connection = session
+            hostId = dial.hostId
+            hostName = await session.hostName
+            connected = true
+            offline = false
+            reconnecting = false
+            intentionalDisconnect = false
+            if let saved = paired.first(where: { $0.id == dial.hostId }) {
+                activeHost = saved
+                touch(saved.id)
+            }
+            shares = try await session.shares()
+            path = "/"
+            terminalCWD = "/"
+            terminalLines = [TermLine(text: L10n.termWelcome, kind: .dim)]
+            try await refresh()
+        } catch {
+            await stream.close()
+        }
     }
 
     func refreshBrowser() {
@@ -126,6 +186,7 @@ final class ClientStore {
         guard !trimmed.isEmpty else { return }
         deviceName = trimmed
         UserDefaults.standard.set(trimmed, forKey: "deviceName")
+        startPhoneListener()
     }
 
     func setFontSize(_ size: Double) {
@@ -178,7 +239,8 @@ final class ClientStore {
             return
         }
         guard let keyData = try? KeychainStore.load(service: Self.service, account: "host.\(item.id)") else {
-            revoked = true
+            offline = true
+            statusMessage = "This iPhone lost the saved pairing for \(item.name). Pair once more, then it will stay saved."
             return
         }
         reconnecting = connection != nil
@@ -440,7 +502,16 @@ final class ClientStore {
     }
 
     func clearCompleted() {
-        transfers.removeAll { $0.state == .completed }
+        transfers.removeAll { $0.state != .active }
+    }
+
+    func removeTransfer(_ item: TransferItem) {
+        guard item.state != .active else { return }
+        transfers.removeAll { $0.id == item.id }
+    }
+
+    func removeTransfers(_ ids: Set<UUID>) {
+        transfers.removeAll { ids.contains($0.id) && $0.state != .active }
     }
 
     func goUp() async {
@@ -553,6 +624,7 @@ final class ClientStore {
     }
 
     func sceneBecameActive() {
+        if !showPrimer { startPhoneListener() }
         guard connected, connection == nil, activeHost != nil, !demoMode, !intentionalDisconnect else { return }
         reconnecting = true
         scheduleReconnect()
@@ -713,6 +785,21 @@ final class ClientStore {
         recents = ((try? context.fetch(FetchDescriptor<RecentRecord>())) ?? []).sorted { $0.openedAt > $1.openedAt }
     }
 
+    private func applyDiscoveredNames(_ hosts: [DiscoveredHost]) {
+        for host in hosts {
+            guard let match = paired.first(where: { host.matches(savedHostId: $0.id) }), match.name != host.name else { continue }
+            renamePaired(id: match.id, name: host.name)
+        }
+    }
+
+    private func renamePaired(id: String, name: String) {
+        let records = (try? context.fetch(FetchDescriptor<PairedHostRecord>())) ?? []
+        guard let existing = records.first(where: { $0.hostId == id }) else { return }
+        existing.name = name
+        try? context.save()
+        reloadPaired()
+    }
+
     private func savePaired(id: String, name: String) {
         let records = (try? context.fetch(FetchDescriptor<PairedHostRecord>())) ?? []
         if let existing = records.first(where: { $0.hostId == id }) {
@@ -796,11 +883,18 @@ final class ClientStore {
     private static let service = "app.tether.client"
 
     private static func loadDeviceID() -> String {
+        let defaultsKey = "tether.deviceId"
         if let data = try? KeychainStore.load(service: service, account: "device-id"),
            let text = String(data: data, encoding: .utf8), !text.isEmpty {
+            UserDefaults.standard.set(text, forKey: defaultsKey)
             return text
         }
+        if let saved = UserDefaults.standard.string(forKey: defaultsKey), !saved.isEmpty {
+            try? KeychainStore.save(service: service, account: "device-id", data: Data(saved.utf8))
+            return saved
+        }
         let id = UUID().uuidString
+        UserDefaults.standard.set(id, forKey: defaultsKey)
         try? KeychainStore.save(service: service, account: "device-id", data: Data(id.utf8))
         return id
     }

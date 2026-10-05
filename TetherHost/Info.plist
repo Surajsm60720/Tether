@@ -9,6 +9,7 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_tether._tcp</string>
+		<string>_tether-phone._tcp</string>
 	</array>
 </dict>
 </plist>

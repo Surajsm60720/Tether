@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Bindable var store: HostStore
     @State private var filter = ""
     @State private var pendingRevoke: DeviceItem?
+    @State private var nameDraft = ""
 
     var body: some View {
         TabView {
@@ -36,10 +37,16 @@ struct SettingsView: View {
 
     private var general: some View {
         Form {
-            TextField(L10n.macName, text: Binding(
-                get: { store.macName },
-                set: { store.setName($0) }
-            ))
+            TextField(L10n.macName, text: $nameDraft)
+                .onSubmit { store.setName(nameDraft) }
+            HStack {
+                Button("Save name") { store.setName(nameDraft) }
+                Button("Random name") {
+                    let generated = FriendlyName.make()
+                    nameDraft = generated
+                    store.setName(generated)
+                }
+            }
             Toggle(L10n.launchAtLogin, isOn: Binding(
                 get: { store.launchAtLogin },
                 set: { store.setLaunchAtLogin($0) }
@@ -54,6 +61,8 @@ struct SettingsView: View {
             ))
         }
         .formStyle(.grouped)
+        .onAppear { nameDraft = store.macName }
+        .onChange(of: store.macName) { _, name in nameDraft = name }
     }
 
     private var folders: some View {
@@ -65,18 +74,21 @@ struct SettingsView: View {
                         set: { store.rename(share, to: $0) }
                     ))
                 }
-                TableColumn("Access") { share in
-                    Toggle(L10n.canUpload, isOn: Binding(
+                TableColumn("Allow uploads") { share in
+                    Toggle("Allow uploads", isOn: Binding(
                         get: { share.writable },
                         set: { store.setWritable(share, $0) }
                     ))
                     .toggleStyle(.checkbox)
+                    .labelsHidden()
                 }
                 TableColumn("") { share in
                     Button("Remove", role: .destructive) { store.remove(share) }
                 }
             }
-            Button(L10n.addFolder) { store.addFolder() }
+            Text("Allow uploads lets the iPhone add files. Leave it off to only allow browsing and downloads. Add folders from the main Tether window.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 

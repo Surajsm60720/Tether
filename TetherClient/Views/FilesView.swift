@@ -177,18 +177,21 @@ struct FilesView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Menu {
-                ForEach(store.ancestors, id: \.self) { ancestor in
-                    Button(ancestor == "/" ? store.hostName : ancestor) {
-                        Task { await store.go(to: ancestor) }
+        if store.path != "/" {
+            ToolbarItem(placement: .principal) {
+                Menu {
+                    ForEach(store.ancestors, id: \.self) { ancestor in
+                        Button(ancestor == "/" ? store.hostName : ancestor) {
+                            Task { await store.go(to: ancestor) }
+                        }
                     }
+                } label: {
+                    Text(store.folderTitle)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .truncationMode(.tail)
                 }
-            } label: {
-                Text(store.folderTitle)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
         }
         ToolbarItem(placement: .topBarLeading) {
@@ -216,15 +219,6 @@ struct FilesView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
-            Menu {
-                PhotosPicker(selection: $picker, matching: .any(of: [.images, .videos])) {
-                    Label("Photos", systemImage: "photo")
-                }
-                Button("Files", systemImage: "doc") { importing = true }
-            } label: {
-                Image(systemName: "plus")
-            }
-            .accessibilityLabel("Upload")
         }
     }
 

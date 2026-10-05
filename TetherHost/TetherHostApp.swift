@@ -26,7 +26,7 @@ struct TetherHostApp: App {
         MenuBarExtra {
             MenuBarRoot(store: store)
         } label: {
-            Image(systemName: store.statusSymbol)
+            Image(systemName: "macbook.and.iphone")
                 .accessibilityLabel(store.statusLabel)
         }
         .menuBarExtraStyle(.window)

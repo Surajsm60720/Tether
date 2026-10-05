@@ -34,6 +34,15 @@ struct ActivityEvent: Identifiable, Equatable {
     var text: String
 }
 
+enum FriendlyName {
+    private static let choices = [
+        "Amber Desk", "Cedar Studio", "Willow Nook", "Harbor Loft", "Maple Study",
+        "Copper Nest", "Bright Room", "Quiet Bench", "Silver Den", "Summit Desk",
+    ]
+
+    static func make() -> String { choices.randomElement() ?? "Tether Mac" }
+}
+
 enum RuntimeEvent: Sendable {
     case log(String)
     case paired(id: String, name: String, key: Data)
@@ -68,7 +77,7 @@ final class HostStore {
     init(context: ModelContext) {
         self.context = context
         let defaults = UserDefaults.standard
-        let name = defaults.string(forKey: "macName") ?? Host.current().localizedName ?? "Mac"
+        let name = HostStore.storedName(defaults: defaults)
         macName = name
         sharingEnabled = defaults.object(forKey: "sharingEnabled") as? Bool ?? true
         requireApproval = defaults.bool(forKey: "requireApproval")
@@ -88,6 +97,65 @@ final class HostStore {
         } else {
             networkLine = L10n.sharingPaused
         }
+        startPhoneBrowser()
+    }
+
+    var nearbyPhones: [DiscoveredHost] = []
+    var phoneStatus: String?
+    private let phoneBrowser = TetherBrowser(serviceType: TetherCoreInfo.phoneServiceType)
+
+    func useRandomName() {
+        setName(FriendlyName.make())
+    }
+
+    func connect(phone: DiscoveredHost) {
+        guard sharingEnabled else {
+            phoneStatus = "Turn on Sharing, then connect."
+            return
+        }
+        guard devices.contains(where: { phone.matches(savedHostId: $0.id) }) else {
+            phoneStatus = "Pair \(phone.name) from the iPhone first."
+            return
+        }
+        phoneStatus = "Connecting to \(phone.name)…"
+        let runtime = runtime
+        let name = macName
+        let id = runtime.hostId
+        Task {
+            let stream = TetherLink.stream(to: phone.endpoint)
+            do {
+                try await stream.start()
+                try await stream.send(try SessionDial.encode(hostId: id, hostName: name))
+                self.phoneStatus = "\(phone.name) is opening this Mac."
+                let started = Date()
+                await HostConnection.serve(stream: stream, remote: phone.name, server: runtime)
+                if Date().timeIntervalSince(started) < 2 {
+                    self.phoneStatus = "Open Tether on \(phone.name), then try again."
+                } else if self.phoneStatus == "\(phone.name) is opening this Mac." {
+                    self.phoneStatus = nil
+                }
+            } catch {
+                self.phoneStatus = "Open Tether on \(phone.name), then try again."
+            }
+        }
+    }
+
+    private func startPhoneBrowser() {
+        phoneBrowser.onUpdate = { phones in
+            Task { @MainActor in
+                HostStore.shared?.nearbyPhones = phones
+            }
+        }
+        phoneBrowser.start()
+    }
+
+    private static func storedName(defaults: UserDefaults) -> String {
+        if let saved = defaults.string(forKey: "macName"), !saved.isEmpty {
+            return saved
+        }
+        let generated = FriendlyName.make()
+        defaults.set(generated, forKey: "macName")
+        return generated
     }
 
     static var shared: HostStore?

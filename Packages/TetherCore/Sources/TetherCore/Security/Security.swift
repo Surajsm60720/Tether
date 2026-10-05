@@ -309,20 +309,40 @@ public enum KeychainStore {
     }
 
     public static func load(service: String, account: String) throws -> Data? {
-        var query = baseQuery(service: service, account: account)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw ProtocolFailure(code: .internalError, message: "Couldn't read the pairing key on this device.")
+        if let data = read(baseQuery(service: service, account: account)) {
+            return data
         }
-        return data
+        let older = legacyQuery(service: service, account: account)
+        if let data = read(older) {
+            try? save(service: service, account: account, data: data)
+            SecItemDelete(older as CFDictionary)
+            return data
+        }
+        return nil
     }
 
     public static func delete(service: String, account: String) {
         SecItemDelete(baseQuery(service: service, account: account) as CFDictionary)
+        SecItemDelete(legacyQuery(service: service, account: account) as CFDictionary)
+    }
+
+    private static func read(_ query: [String: Any]) -> Data? {
+        var query = query
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        return data
+    }
+
+    /// Items saved before the data-protection keychain change, or without the synchronizable flag.
+    private static func legacyQuery(service: String, account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
     }
 
     private static func baseQuery(service: String, account: String) -> [String: Any] {

@@ -211,3 +211,45 @@ final class PipeEnd: ByteStream, @unchecked Sendable {
         peer.close()
     }
 }
+
+/// Reads one length-prefixed frame from a live stream. Used when the Mac dials the phone
+/// before the normal handshake starts.
+public final class FrameReader: @unchecked Sendable {
+    private let stream: NWByteStream
+    private var decoder = FrameDecoder()
+
+    public init(stream: NWByteStream) {
+        self.stream = stream
+    }
+
+    public func nextPayload() async throws -> Data {
+        while true {
+            if let payload = try decoder.pop() { return payload }
+            let chunk = try await stream.receive(maximumLength: 64 * 1024)
+            if chunk.isEmpty {
+                await Task.yield()
+                continue
+            }
+            decoder.append(chunk)
+        }
+    }
+}
+
+public enum SessionDial {
+    public static func encode(hostId: String, hostName: String) throws -> Data {
+        var header = Header()
+        header.op = "dial"
+        header.hostId = hostId
+        header.hostName = hostName
+        let message = WireMessage(kind: .request, header: header)
+        return try FrameCodec.encode(payload: try message.encode())
+    }
+
+    public static func decode(_ payload: Data) throws -> (hostId: String, hostName: String) {
+        let message = try WireMessage.decode(payload)
+        guard message.header.op == "dial", let hostId = message.header.hostId, !hostId.isEmpty else {
+            throw ProtocolFailure.malformed
+        }
+        return (hostId, message.header.hostName ?? "Mac")
+    }
+}

@@ -47,15 +47,18 @@ public enum TetherLink {
 
 public final class TetherBrowser: @unchecked Sendable {
     private let queue = DispatchQueue(label: "app.tether.browser")
+    private let serviceType: String
     private var browser: NWBrowser?
+
+    public init(serviceType: String = TetherCoreInfo.serviceType) {
+        self.serviceType = serviceType
+    }
     public var onUpdate: (@Sendable ([DiscoveredHost]) -> Void)?
     public var onState: (@Sendable (String) -> Void)?
 
-    public init() {}
-
     public func start() {
         stop()
-        let browser = NWBrowser(for: .bonjour(type: TetherCoreInfo.serviceType, domain: "local."), using: TetherLink.parameters())
+        let browser = NWBrowser(for: .bonjour(type: serviceType, domain: "local."), using: TetherLink.parameters())
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             let hosts = results.compactMap { Self.host(from: $0) }
             self?.onUpdate?(hosts)
@@ -93,7 +96,13 @@ public final class TetherListener: @unchecked Sendable {
     /// Advertises on the local network. The Bonjour name is ASCII (`Tether-` plus the host id)
     /// so a Mac name with an apostrophe cannot make the advertisement fail. The display name
     /// travels in the TXT record.
-    public func start(name: String, hostId: String, peerToPeer: Bool = true) throws {
+    public func start(
+        name: String,
+        hostId: String,
+        peerToPeer: Bool = true,
+        serviceType: String = TetherCoreInfo.serviceType,
+        namePrefix: String = "Tether"
+    ) throws {
         stop()
         let listener = try NWListener(using: TetherLink.parameters(peerToPeer: peerToPeer))
         var record = NWTXTRecord()
@@ -101,8 +110,8 @@ public final class TetherListener: @unchecked Sendable {
         record["id"] = hostId
         record["name"] = String(name.prefix(80))
         listener.service = NWListener.Service(
-            name: "Tether-\(hostId)",
-            type: TetherCoreInfo.serviceType,
+            name: "\(namePrefix)-\(hostId)",
+            type: serviceType,
             domain: "local.",
             txtRecord: record
         )
@@ -141,8 +150,7 @@ enum BonjourHostID {
             let trimmed = txtId.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { return trimmed }
         }
-        let prefix = "Tether-"
-        if serviceName.hasPrefix(prefix) {
+        for prefix in ["Tether-", "Phone-"] where serviceName.hasPrefix(prefix) {
             let rest = String(serviceName.dropFirst(prefix.count))
             if !rest.isEmpty { return rest }
         }
@@ -151,8 +159,8 @@ enum BonjourHostID {
 
     public static func matches(discoveredId: String, serviceName: String, savedId: String) -> Bool {
         if discoveredId == savedId { return true }
-        if serviceName == "Tether-\(savedId)" { return true }
-        if discoveredId == "name:\(serviceName)", serviceName == "Tether-\(savedId)" { return true }
+        if serviceName == "Tether-\(savedId)" || serviceName == "Phone-\(savedId)" { return true }
+        if discoveredId == "name:\(serviceName)", serviceName == "Tether-\(savedId)" || serviceName == "Phone-\(savedId)" { return true }
         return false
     }
 }
