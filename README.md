@@ -19,8 +19,6 @@ There is no account, no third-party networking library, and no third-party crypt
 - Approve or revoke each iPhone from the Mac. A revoked phone cannot open a new session.
 - Reach the Mac from another network with a saved address or a relay, after you have paired once on Wi-Fi.
 
-Tether does not run Claude Code, the Cursor CLI, or any other full-screen terminal program. Those need a real pseudo-terminal and a terminal emulator. The phone terminal is a command interpreter plus, for commands it does not implement, a short non-interactive `zsh -c` on the Mac.
-
 ## Requirements
 
 - Xcode 16 or later
@@ -152,7 +150,7 @@ There is no kill or renice. The process list needs the Mac app’s process-info 
 
 ## Other networks
 
-A home address such as `192.168.1.20` only works on that Wi-Fi. The internet cannot route to it. Tether has two ways to connect when Bonjour does not see the Mac.
+A home address such as `192.168.x.x` only works on that Wi-Fi. The internet cannot route to it. Tether has two ways to connect when Bonjour does not see the Mac.
 
 1. **A reachable address.** The Mac listens on port **52173** while **Allow connections from other networks** is on. The Other networks page lists this Mac’s addresses. A Tailscale address (`100.x`) is preferred when one exists, then a public address, then a VPN address, then the Wi-Fi address. You can type a hostname instead, for example the name you forwarded on your router. The phone tries that address when the Mac is not on the local network. Private Wi-Fi addresses are only tried briefly, then Tether falls through to the relay if you set one.
 2. **A relay.** Run `tether-relay` on a computer that has a public port. The Mac and the iPhone both connect outward to it, so the home router does not need a port forward. The default relay port is **52174**.
