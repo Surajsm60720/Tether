@@ -13,24 +13,32 @@ struct TerminalScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(store.terminalLines) { line in
-                            Text(line.text.isEmpty ? " " : line.text)
-                                .font(font)
-                                .foregroundStyle(color(for: line.kind))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
+            GeometryReader { geo in
+                let inner = max(120, geo.size.width - 24)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(store.terminalLines) { line in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    ForEach(Array(MonoLayout.wrap(line.text, maxWidth: inner, size: store.fontSize).enumerated()), id: \.offset) { _, piece in
+                                        Text(piece)
+                                            .font(font)
+                                            .foregroundStyle(color(for: line.kind))
+                                            .frame(width: inner, alignment: .leading)
+                                            .textSelection(.enabled)
+                                    }
+                                }
                                 .id(line.id)
+                            }
                         }
+                        .padding(12)
+                        .frame(width: geo.size.width, alignment: .leading)
                     }
-                    .padding(12)
-                }
-                .scrollDismissesKeyboard(.never)
-                .onChange(of: store.terminalLines.count) { _, _ in
-                    if let last = store.terminalLines.last?.id {
-                        proxy.scrollTo(last, anchor: .bottom)
+                    .scrollDismissesKeyboard(.never)
+                    .onChange(of: store.terminalLines.count) { _, _ in
+                        if let last = store.terminalLines.last?.id {
+                            proxy.scrollTo(last, anchor: .bottom)
+                        }
                     }
                 }
             }
@@ -50,6 +58,9 @@ struct TerminalScreen: View {
                 }
             }
         }
+        .fullScreenCover(isPresented: $store.showMonitor) {
+            MonitorScreen(store: store)
+        }
         .onChange(of: store.requestUpload) { _, requested in
             if requested {
                 importing = true
@@ -63,16 +74,16 @@ struct TerminalScreen: View {
             Circle()
                 .fill(store.offline ? Color.tether.warning : Color.tether.success)
                 .frame(width: 8, height: 8)
-            Text(store.hostName)
-                .font(.caption)
-                .foregroundStyle(TerminalTheme.standard.fg)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Text(store.terminalCWD)
-                .font(.caption)
-                .foregroundStyle(TerminalTheme.standard.dir)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(store.hostName)
+                    .font(.caption)
+                    .foregroundStyle(TerminalTheme.standard.fg)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(store.terminalCWD)
+                    .font(.caption)
+                    .foregroundStyle(TerminalTheme.standard.dir)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Spacer()
             Button {
                 store.sessionTab = 0
@@ -88,12 +99,13 @@ struct TerminalScreen: View {
     }
 
     private var promptRow: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 0) {
+        VStack(alignment: .leading, spacing: 2) {
             Text(store.prompt)
                 .font(font)
                 .foregroundStyle(TerminalTheme.standard.prompt)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
             TextField("", text: $draft, axis: .horizontal)
                 .font(font)
                 .foregroundStyle(TerminalTheme.standard.fg)
@@ -107,6 +119,7 @@ struct TerminalScreen: View {
                 }
             TerminalCursor(height: store.fontSize, animate: !reduceMotion)
                 .allowsHitTesting(false)
+            }
         }
         .padding(.horizontal, 12)
         .contentShape(Rectangle())

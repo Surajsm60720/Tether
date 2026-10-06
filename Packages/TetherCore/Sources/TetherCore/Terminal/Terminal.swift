@@ -47,7 +47,7 @@ public enum Tokenizer {
 public struct TerminalEngine: Sendable {
     public init() {}
 
-    public func execute(line raw: String, cwd: String, files: any FileProvider) async -> TerminalResult {
+    public func execute(line raw: String, cwd: String, files: any FileProvider, context: TerminalContext? = nil) async -> TerminalResult {
         let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let directory = (try? VirtualPath.parse(cwd)) ?? .root
         guard !line.isEmpty else {
@@ -80,6 +80,11 @@ public struct TerminalEngine: Sendable {
         case "grep": result = await grep(args, cwd: directory, files: files)
         case "wc": result = await wordCount(args, cwd: directory, files: files)
         case "date": result = TerminalResult(stdout: formatDate(Date()) + "\n", cwd: directory.string)
+        case "whoami": result = whoami(cwd: directory, context: context)
+        case "status": result = status(cwd: directory, context: context)
+        case "fetch", "neofetch", "fastfetch": result = fetch(cwd: directory, context: context)
+        case "monitor", "htop", "btop":
+            result = TerminalResult(cwd: directory.string, action: TerminalAction(type: "monitor"))
         case "open", "preview": result = await actionCommand(command, args: args, cwd: directory, files: files)
         case "get": result = await actionCommand("get", args: args, cwd: directory, files: files)
         case "put": result = await put(cwd: directory, files: files)
@@ -96,8 +101,9 @@ public struct TerminalEngine: Sendable {
     }
 
     public static let commandNames = [
-        "cat", "cd", "clear", "cp", "date", "du", "echo", "exit", "find", "get", "grep", "head", "help",
-        "ls", "mkdir", "mv", "open", "preview", "put", "pwd", "rm", "rmdir", "stat", "tail", "touch", "tree", "wc",
+        "btop", "cat", "cd", "clear", "cp", "date", "du", "echo", "exit", "fastfetch", "fetch", "find", "get", "grep",
+        "head", "help", "htop", "ls", "mkdir", "monitor", "mv", "neofetch", "open", "preview", "put", "pwd", "rm",
+        "rmdir", "stat", "status", "tail", "touch", "tree", "wc", "whoami",
     ]
 
     private func help(cwd: VirtualPath) -> TerminalResult {
@@ -122,6 +128,10 @@ public struct TerminalEngine: Sendable {
         grep <text> <file>   search a text file
         wc <file>            line, word, and byte counts
         date                 current time
+        whoami               Mac account and this iPhone
+        status               host, folder, and uptime
+        fetch                Mac summary (neofetch, fastfetch)
+        htop                 live CPU and memory (btop, monitor)
         open <file>          preview on this iPhone
         get <file>           download to this iPhone
         put                  upload into this folder
@@ -132,6 +142,24 @@ public struct TerminalEngine: Sendable {
 
         """
         return TerminalResult(stdout: text, cwd: cwd.string)
+    }
+
+    private func whoami(cwd: VirtualPath, context: TerminalContext?) -> TerminalResult {
+        guard let context else { return fail("whoami: connect to a Mac first.", cwd: cwd) }
+        return TerminalResult(stdout: SystemText.whoami(user: context.user, host: context.host, device: context.device), cwd: cwd.string)
+    }
+
+    private func status(cwd: VirtualPath, context: TerminalContext?) -> TerminalResult {
+        guard let context else { return fail("status: connect to a Mac first.", cwd: cwd) }
+        return TerminalResult(
+            stdout: SystemText.status(profile: context.profile, folder: cwd.string, device: context.device),
+            cwd: cwd.string
+        )
+    }
+
+    private func fetch(cwd: VirtualPath, context: TerminalContext?) -> TerminalResult {
+        guard let context else { return fail("fetch: connect to a Mac first.", cwd: cwd) }
+        return TerminalResult(stdout: SystemText.fetch(context.profile), cwd: cwd.string)
     }
 
     private func changeDirectory(_ args: [String], cwd: VirtualPath, files: any FileProvider) async -> TerminalResult {

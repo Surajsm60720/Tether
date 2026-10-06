@@ -37,6 +37,12 @@ final class ClientStore {
     var readOnlyAlert = false
     var terminalLines: [TermLine] = []
     var terminalCWD = "/"
+    var showMonitor = false
+    var monitorProfile: SystemProfile?
+    var monitorStats: SystemStats?
+    var monitorDown = "0 B/s"
+    var monitorUp = "0 B/s"
+    var monitorMessage: String?
     var history: [String] = []
     var historyIndex = 0
     var deviceName: String
@@ -67,6 +73,10 @@ final class ClientStore {
     private var intentionalDisconnect = false
     private var activeHost: PairedItem?
     private var pendingPreview = true
+    private var monitorBytesIn: UInt64?
+    private var monitorBytesOut: UInt64?
+    private var monitorSampledAt: Date?
+    private var monitorTick = 0
     private var pendingPath = "/"
     private var thumbnailCache: [String: Data] = [:]
     private let deviceID: String
@@ -754,7 +764,9 @@ final class ClientStore {
         do {
             let result: TerminalResult
             if let demoFiles {
-                result = await TerminalEngine().execute(line: trimmed, cwd: terminalCWD, files: demoFiles)
+                let profile = SystemDemo.profile(host: hostName.isEmpty ? "Demo Mac" : hostName, shares: max(shares.count, 1))
+                let context = TerminalContext(user: profile.user, host: profile.host, device: deviceName, profile: profile)
+                result = await TerminalEngine().execute(line: trimmed, cwd: terminalCWD, files: demoFiles, context: context)
             } else if let connection {
                 result = try await connection.exec(cwd: terminalCWD, line: trimmed)
             } else {
@@ -1025,12 +1037,59 @@ final class ClientStore {
         }
     }
 
+    func refreshMonitor() async {
+        if demoFiles != nil || demoMode {
+            monitorTick += 1
+            let host = hostName.isEmpty ? "Demo Mac" : hostName
+            monitorProfile = SystemDemo.profile(host: host, shares: max(shares.count, 1))
+            applyMonitor(SystemDemo.stats(tick: monitorTick))
+            monitorMessage = nil
+            return
+        }
+        guard let connection else {
+            monitorMessage = "Not connected."
+            return
+        }
+        do {
+            if monitorProfile == nil {
+                monitorProfile = try await connection.systemProfile()
+            }
+            applyMonitor(try await connection.systemStats())
+            monitorMessage = nil
+        } catch {
+            monitorMessage = (error as? ProtocolFailure)?.message ?? "Couldn't read the Mac."
+        }
+    }
+
+    private func applyMonitor(_ stats: SystemStats) {
+        let now = Date()
+        if let beforeIn = monitorBytesIn, let beforeOut = monitorBytesOut, let then = monitorSampledAt {
+            let elapsed = now.timeIntervalSince(then)
+            if elapsed > 0.2, stats.bytesIn >= beforeIn, stats.bytesOut >= beforeOut {
+                monitorDown = SystemText.rate(Double(stats.bytesIn - beforeIn) / elapsed)
+                monitorUp = SystemText.rate(Double(stats.bytesOut - beforeOut) / elapsed)
+            }
+        }
+        monitorBytesIn = stats.bytesIn
+        monitorBytesOut = stats.bytesOut
+        monitorSampledAt = now
+        monitorStats = stats
+    }
+
     private func perform(_ action: TerminalAction) async {
         switch action.type {
         case "clear":
             terminalLines = []
         case "exit":
             sessionTab = 0
+        case "monitor":
+            monitorProfile = nil
+            monitorStats = nil
+            monitorBytesIn = nil
+            monitorBytesOut = nil
+            monitorSampledAt = nil
+            monitorMessage = nil
+            showMonitor = true
         case "open", "preview", "get":
             guard let path = action.path, let virtual = try? VirtualPath.parse(path) else { return }
             let name = virtual.components.last ?? "file"

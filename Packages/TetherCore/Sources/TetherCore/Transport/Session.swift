@@ -85,6 +85,7 @@ private actor HostSession {
     private var deviceId = ""
     private var deviceName = ""
     private let terminal = TerminalEngine()
+    private let sampler = SystemSampler()
 
     init(stream: any ByteStream, remote: String, server: any HostServing) {
         self.stream = stream
@@ -297,6 +298,13 @@ private actor HostSession {
                 try await files.abortUpload(id: id)
             }
             try await send(WireMessage(kind: .response, header: header))
+        case Op.sysInfo:
+            let shares = await files.shares()
+            header.systemProfile = SystemProbe.profile(hostName: server.hostName(), shareCount: shares.count)
+            try await send(WireMessage(kind: .response, header: header))
+        case Op.sysStats:
+            header.systemStats = await sampler.stats()
+            try await send(WireMessage(kind: .response, header: header))
         case Op.termExec:
             let cwd = message.header.cwd ?? "/"
             let line = message.header.line ?? ""
@@ -304,7 +312,15 @@ private actor HostSession {
             if TerminalSyntax.requiresShell(line), let shell = await server.runShell(line: line, cwd: cwd) {
                 result = shell
             } else {
-                let virtual = await terminal.execute(line: line, cwd: cwd, files: files)
+                let shares = await files.shares()
+                let profile = SystemProbe.profile(hostName: server.hostName(), shareCount: shares.count)
+                let context = TerminalContext(
+                    user: profile.user,
+                    host: server.hostName(),
+                    device: deviceName.isEmpty ? "this iPhone" : deviceName,
+                    profile: profile
+                )
+                let virtual = await terminal.execute(line: line, cwd: cwd, files: files, context: context)
                 if virtual.exit == 127, let shell = await server.runShell(line: line, cwd: cwd) {
                     result = shell
                 } else {
@@ -576,6 +592,22 @@ public actor ClientConnection {
             _ = try? await roundTrip(abort, timeout: .seconds(5))
             throw error
         }
+    }
+
+    public func systemProfile() async throws -> SystemProfile {
+        var header = Header()
+        header.op = Op.sysInfo
+        let reply = try await roundTrip(header, timeout: .seconds(8))
+        guard let profile = reply.header.systemProfile else { throw ProtocolFailure.malformed }
+        return profile
+    }
+
+    public func systemStats() async throws -> SystemStats {
+        var header = Header()
+        header.op = Op.sysStats
+        let reply = try await roundTrip(header, timeout: .seconds(8))
+        guard let stats = reply.header.systemStats else { throw ProtocolFailure.malformed }
+        return stats
     }
 
     public func exec(cwd: String, line: String) async throws -> TerminalResult {

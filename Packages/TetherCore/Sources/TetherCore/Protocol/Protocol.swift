@@ -19,6 +19,8 @@ public enum Op {
     public static let writeCommit = "write.commit"
     public static let writeAbort = "write.abort"
     public static let termExec = "term.exec"
+    public static let sysInfo = "sys.info"
+    public static let sysStats = "sys.stats"
     public static let auth = "auth"
     public static let authOK = "auth.ok"
     public static let pairRequest = "pair.request"
@@ -220,6 +222,8 @@ public struct Header: Codable, Sendable, Equatable {
     public var entries: [FileEntry]?
     public var entry: FileEntry?
     public var all: Bool?
+    public var systemProfile: SystemProfile?
+    public var systemStats: SystemStats?
 
     public init() {}
 }

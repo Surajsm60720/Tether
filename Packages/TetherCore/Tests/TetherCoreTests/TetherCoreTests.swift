@@ -501,6 +501,83 @@ private final class TestHost: HostServing, @unchecked Sendable {
     await client.close()
 }
 
+@Test func systemCommandsFormatWhoamiFetchAndMonitor() async {
+    let profile = SystemProfile(
+        user: "suraj",
+        host: "Studio Mac",
+        model: "Mac16,1",
+        os: "macOS 26.0.0",
+        cpu: "Apple M4",
+        cores: 10,
+        memory: 24 * 1024 * 1024 * 1024,
+        uptime: 3 * 3600 + 12 * 60,
+        diskUsed: 180 * 1024 * 1024 * 1024,
+        diskTotal: 500 * 1024 * 1024 * 1024,
+        shares: 2
+    )
+    let context = TerminalContext(user: "suraj", host: "Studio Mac", device: "Suraj's iPhone", profile: profile)
+    #expect(SystemText.whoami(user: "suraj", host: "Studio Mac", device: "Suraj's iPhone") == "suraj@Studio Mac (via Suraj's iPhone)\n")
+    let portrait = SystemText.fetch(profile)
+    #expect(portrait.contains("suraj@Studio Mac"))
+    #expect(portrait.contains("Shares  2"))
+    #expect(portrait.contains("Load"))
+    #expect(SystemText.uptime(3 * 3600 + 12 * 60) == "3h 12m")
+    let previous = CPUSample(cores: [CPUSample.Core(user: 10, system: 5, idle: 85, nice: 0)])
+    let current = CPUSample(cores: [CPUSample.Core(user: 20, system: 15, idle: 165, nice: 0)])
+    #expect(CPUDelta.percents(previous: previous, current: current) == [20])
+    let parts = CPUDelta.parts(previous: previous, current: current)
+    #expect(abs(parts.user - 10) < 0.01)
+    #expect(abs(parts.idle - 80) < 0.01)
+    #expect(BatteryMath.chargePercent(current: 100, max: 100) == 100)
+    #expect(BatteryMath.maximumCapacity(nominal: 4462, design: 4563) == 97)
+    #expect(BatteryMath.condition(health: 92) == "Good")
+    let sensors = TemperatureFilter.choose([
+        ("PMU tdie1", 60),
+        ("PMU tdie2", 59),
+        ("PMU tdie3", 58),
+        ("PMU tdie4", 57),
+        ("PMU tdie5", 56),
+        ("PMU tdie6", 55),
+        ("PMU tdie6", 51),
+        ("gas gauge battery", 33),
+        ("PMU ibuck4", 4),
+    ])
+    #expect(sensors.count == 6)
+    #expect(sensors.first?.name == "PMU tdie1")
+    #expect(sensors.contains { $0.name == "gas gauge battery" })
+    #expect(!sensors.contains { $0.name == "PMU tdie6" })
+
+    let files = MemoryFileProvider()
+    let engine = TerminalEngine()
+    let who = await engine.execute(line: "whoami", cwd: "/", files: files, context: context)
+    #expect(who.stdout.contains("suraj@Studio Mac"))
+    #expect(who.exit == 0)
+    let monitor = await engine.execute(line: "htop", cwd: "/", files: files, context: context)
+    #expect(monitor.action?.type == "monitor")
+    let alias = await engine.execute(line: "btop", cwd: "/", files: files)
+    #expect(alias.action?.type == "monitor")
+    let offline = await engine.execute(line: "fetch", cwd: "/", files: files)
+    #expect(offline.exit == 1)
+}
+
+@Test func systemProbeReadsThisMac() async {
+    let profile = SystemProbe.profile(hostName: "Studio Mac", shareCount: 1)
+    #expect(profile.host == "Studio Mac")
+    #expect(profile.memory > 0)
+    #expect(profile.cores >= 1)
+    #expect(profile.os.hasPrefix("macOS"))
+    let stats = await SystemSampler().stats()
+    #expect(!stats.cores.isEmpty)
+    #expect(stats.memoryTotal > 0)
+    #expect(!stats.processes.isEmpty)
+    if !stats.temperatures.isEmpty {
+        #expect(stats.temperatures.allSatisfy { $0.celsius > 1 && $0.celsius < 125 })
+    }
+    if let health = stats.batteryHealth {
+        #expect((1...100).contains(health))
+    }
+}
+
 private final class OnceResume<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var done = false
