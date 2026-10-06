@@ -1,5 +1,7 @@
 # Tether
 
+Version 1.0.
+
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, and run a terminal against those folders, without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
 On the same Wi-Fi, the Mac advertises itself and the phone finds it. Away from that network, the phone can still connect if you save a reachable address (a public hostname, a forwarded port, or a Tailscale address) or if both devices dial out to a small relay you run. File contents and terminal commands stay encrypted with the pairing key. A relay only forwards bytes.
@@ -25,7 +27,7 @@ Tether does not run Claude Code, the Cursor CLI, or any other full-screen termin
 - macOS 14 or later for the host
 - iOS 17 or later for the client
 - Swift 6
-- A physical iPhone for real pairing. The simulator can build, and Demo mode on the phone shows sample files without a Mac.
+- A physical iPhone for real pairing. The simulator can build the client.
 - For a device install, an Apple ID in Xcode signing. A paid developer account is not required for a personal install.
 
 Bundle identifiers:
@@ -58,7 +60,7 @@ The menu bar menu shows whether sharing is on, which phones are connected, and s
 | Other networks | Listen for connections from outside this Wi-Fi, show addresses, set a relay, and copy the setup code |
 | Activity | A short log of pairing and connection events. Filter and clear it here |
 
-Settings (the macOS Settings window) repeats general options, folders, phones, other networks, and activity. General settings include the name shown on the iPhone, launch at login, require approval for each session, the sharing switch, and the icon color (Gold, Blue, Green, or Neutral).
+Settings (the macOS Settings window) repeats general options, folders, phones, other networks, activity, and **What's new**. General settings include the name shown on the iPhone, launch at login, require approval for each session, the sharing switch, the icon color (Gold, Blue, Green, or Neutral), and the version.
 
 Folders start read-only. Turn on **Allow uploads** for a folder before the phone can add files there. Uploads are still limited to that folder. Paths that try to escape it are rejected.
 
@@ -77,9 +79,7 @@ The iPhone target must be signed with your Apple ID. A simulator build is alread
 7. Tap **Pair**, scan the QR code, or type the 16-character code. On the Mac, tap **Allow**.
 8. The phone opens the shared folders. Files, Terminal, and Transfers are the three tabs.
 
-To look around with no Mac, open Settings on the iPhone and turn on **Demo**. Sample files appear under Demo Mac, and the terminal commands that do not need a live machine still run against those samples.
-
-iPhone Settings also has the device name (what the Mac shows for this phone), the home-screen icon (Gold, Blue, Green, or Neutral; light, dark, and tinted follow the system), a cache size and clear button, terminal font size from 11 to 20 points, and **Other networks** for the remote setup code.
+iPhone Settings has the device name (what the Mac shows for this phone), the home-screen icon (Gold, Blue, Green, or Neutral; light, dark, and tinted follow the system), a cache size and clear button, terminal font size from 11 to 20 points, **Other networks** for the remote setup code, and **What's new** for this version.
 
 ## Everyday use on the iPhone
 
@@ -222,6 +222,20 @@ swift test --package-path Packages/TetherCore
 ```
 
 The tests cover pairing, the encrypted channel, framing, path escapes, the virtual filesystem, Bonjour names, terminal commands, system-stat formatting, battery maximum-capacity math, the relay, and a direct TCP session. They do not replace trying a real iPhone against the Mac.
+
+## Changelog
+
+Version 1.0 is the first release. The same notes are in Settings → What's new on both the Mac and the iPhone.
+
+- Pair an iPhone with a Mac by QR code or a typed code, then reconnect without a password.
+- Browse, preview, download, and upload files in the folders you choose to share.
+- Follow transfers with progress, retry, and cancel.
+- Use a terminal for everyday file commands inside those folders.
+- See who you are with `whoami`, a short Mac summary with `fetch`, and a live monitor with `htop` or `btop`.
+- The monitor shows CPU, memory, swap, disk, network, battery, temperature, and the busiest processes.
+- Reach the Mac from another network with a saved address or a relay, after pairing once on Wi-Fi.
+- Choose an icon color, set the terminal font size, and clear the preview cache.
+- Approve or revoke each iPhone from the Mac.
 
 ## Limits
 

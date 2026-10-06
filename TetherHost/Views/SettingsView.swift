@@ -21,6 +21,8 @@ struct SettingsView: View {
                 .tabItem { Label("Other networks", systemImage: "globe") }
             activity
                 .tabItem { Label(L10n.activity, systemImage: "list.bullet") }
+            changes
+                .tabItem { Label("What's new", systemImage: "sparkles") }
         }
         .frame(width: 560, height: 480)
         .padding(16)
@@ -74,6 +76,7 @@ struct SettingsView: View {
             Text("Light and Dark follow the Mac’s appearance while Tether is open.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            LabeledContent("Version", value: AppVersion.marketing)
         }
         .formStyle(.grouped)
         .onAppear { nameDraft = store.macName }
@@ -123,6 +126,18 @@ struct SettingsView: View {
                     }
                     Spacer()
                     Button(L10n.revoke, role: .destructive) { pendingRevoke = device }
+                }
+            }
+        }
+    }
+
+    private var changes: some View {
+        List {
+            ForEach(AppChangelog.releases) { release in
+                Section(release.version) {
+                    ForEach(release.items, id: \.self) { item in
+                        Text(item)
+                    }
                 }
             }
         }
@@ -227,6 +242,12 @@ struct OtherNetworksSettings: View {
         case .vpn: "VPN"
         case .local: "This network"
         }
+    }
+}
+
+enum AppVersion {
+    static var marketing: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? AppChangelog.current
     }
 }
 

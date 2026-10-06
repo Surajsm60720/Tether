@@ -134,7 +134,7 @@ Rules:
 - Welcome line on open: `Tether terminal · type 'help' for commands` in `term.dim`.
 
 ### 6.9 Settings
-Grouped list: Device name, Cache (size + Clear), Terminal font size slider, Demo mode, Forget all Macs (destructive, with confirmation), About.
+Grouped list: Device name, Cache (size + Clear), Terminal font size slider, Forget all Macs (destructive, with confirmation), About with version and What's new.
 
 ---
 

@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import TetherCore
 import UIKit
 
 enum AppIconChoice: String, CaseIterable, Identifiable {
@@ -86,14 +87,6 @@ struct SettingsView: View {
                 }
             }
             Section {
-                Toggle(L10n.demo, isOn: Binding(
-                    get: { store.demoMode },
-                    set: { store.setDemo($0) }
-                ))
-            } footer: {
-                Text("Demo mode shows sample files without a Mac, so you can look around when Wi-Fi blocks device-to-device traffic.")
-            }
-            Section {
                 Button("Forget all Macs", role: .destructive) { confirmForget = true }
             }
             Section {
@@ -133,13 +126,19 @@ struct SettingsView: View {
                 Text("Paste the code from the Mac’s Settings to open it when you are not on the same Wi-Fi. On the same Wi-Fi, Tether still connects directly.")
             }
             Section("About") {
-                LabeledContent("Version", value: "0.1")
+                LabeledContent("Version", value: AppVersion.marketing)
+                NavigationLink("What's new") {
+                    ChangelogList()
+                }
                 Text("On the same Wi-Fi, files stay on your network. From another network, Tether uses the address or relay you paste here. A relay only carries encrypted traffic.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
         .navigationTitle(L10n.settings)
+        .onAppear {
+            if store.demoMode { store.setDemo(false) }
+        }
         .onChange(of: iconChoice) { _, choice in
             Task { iconError = await choice.apply() }
         }
@@ -155,6 +154,28 @@ struct SettingsView: View {
             Button("Forget all Macs", role: .destructive) { store.forgetAll() }
             Button("Cancel", role: .cancel) {}
         }
+    }
+}
+
+struct ChangelogList: View {
+    var body: some View {
+        List {
+            ForEach(AppChangelog.releases) { release in
+                Section(release.version) {
+                    ForEach(release.items, id: \.self) { item in
+                        Text(item)
+                    }
+                }
+            }
+        }
+        .navigationTitle("What's new")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+enum AppVersion {
+    static var marketing: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? AppChangelog.current
     }
 }
 

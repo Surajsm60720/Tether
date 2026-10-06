@@ -237,9 +237,6 @@ struct FilesView: View {
                         Text(item.title).tag(item)
                     }
                 }
-                if store.demoMode {
-                    Text(L10n.demo)
-                }
                 Divider()
                 Button(L10n.settings) { showSettings = true }
                 Button("Disconnect") { store.disconnect() }
