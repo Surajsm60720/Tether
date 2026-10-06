@@ -275,6 +275,7 @@ public struct WireMessage: Sendable, Equatable {
 public enum StreamError: Error, Sendable, Equatable {
     case closed
     case failed(String)
+    case timedOut
 }
 
 extension Data {

@@ -54,6 +54,7 @@ final class ClientStore {
     var notice: String?
     var feedbackCue: FeedbackCue = .success
     var feedbackTick = 0
+    var remoteHostIDs: Set<String> = []
 
     private let context: ModelContext
     private let browser = TetherBrowser()
@@ -79,6 +80,7 @@ final class ClientStore {
         deviceID = Self.loadDeviceID()
         ClientStore.shared = self
         reloadPaired()
+        reloadRemote()
         refreshCacheSize()
         if preview { return }
         if !defaults.bool(forKey: "didAcceptPrimer") {
@@ -167,7 +169,7 @@ final class ClientStore {
         do {
             try await stream.start()
             let dial = try SessionDial.decode(try await FrameReader(stream: stream).nextPayload())
-            guard let keyData = PairingSecrets.load(service: Self.service, account: "host.\(dial.hostId)") else {
+            guard let keyData = PairingSecrets.load(service: ClientKeychain.service, account: "host.\(dial.hostId)") else {
                 await stream.close()
                 return
             }
@@ -239,13 +241,15 @@ final class ClientStore {
     }
 
     func forget(_ item: PairedItem) {
-        PairingSecrets.delete(service: Self.service, account: "host.\(item.id)")
+        PairingSecrets.delete(service: ClientKeychain.service, account: "host.\(item.id)")
         let records = (try? context.fetch(FetchDescriptor<PairedHostRecord>())) ?? []
         if let record = records.first(where: { $0.hostId == item.id }) {
             context.delete(record)
             try? context.save()
         }
         paired.removeAll { $0.id == item.id }
+        RemoteBook.clear(hostId: item.id)
+        reloadRemote()
         if hostId == item.id { disconnect() }
     }
 
@@ -263,24 +267,25 @@ final class ClientStore {
         connectingName = item.name
         defer { connectingName = nil }
         if demoMode { enableDemo(); return }
-        guard let endpoint = await endpoint(for: item.id) else {
-            offline = true
-            reconnecting = false
-            statusMessage = L10n.unreachable(item.name)
-            return
-        }
-        guard let keyData = PairingSecrets.load(service: Self.service, account: "host.\(item.id)") else {
+        guard let keyData = PairingSecrets.load(service: ClientKeychain.service, account: "host.\(item.id)") else {
             offline = true
             statusMessage = "This iPhone lost the saved pairing for \(item.name). Pair once more, then it will stay saved."
+            return
+        }
+        let stream: any ByteStream
+        do {
+            stream = try await openStream(for: item.id, name: item.name)
+        } catch {
+            reconnecting = false
+            offline = true
+            statusMessage = remoteFailure(item.name, error, remote: remoteHostIDs.contains(item.id))
             return
         }
         reconnecting = connection != nil
         offline = false
         revoked = false
         statusMessage = nil
-        let stream = TetherLink.stream(to: endpoint)
         do {
-            try await stream.start()
             let session = try await ClientConnection.establish(
                 stream: stream,
                 deviceId: deviceID,
@@ -307,6 +312,7 @@ final class ClientStore {
             }
             try await refresh()
         } catch {
+            await stream.close()
             reconnecting = false
             let failure = error as? ProtocolFailure
             if failure?.message == ProtocolFailure.revoked.message {
@@ -314,7 +320,7 @@ final class ClientStore {
                 connected = false
             } else {
                 offline = true
-                statusMessage = failure?.message ?? L10n.unreachable(item.name)
+                statusMessage = failure?.message ?? remoteFailure(item.name, error, remote: remoteHostIDs.contains(item.id))
             }
         }
     }
@@ -339,8 +345,8 @@ final class ClientStore {
             let name = await session.hostName
             let id = await session.hostId
             guard let key else { throw ProtocolFailure.malformed }
-            PairingSecrets.save(service: Self.service, account: "host.\(id)", data: key)
-            guard PairingSecrets.load(service: Self.service, account: "host.\(id)") != nil else {
+            PairingSecrets.save(service: ClientKeychain.service, account: "host.\(id)", data: key)
+            guard PairingSecrets.load(service: ClientKeychain.service, account: "host.\(id)") != nil else {
                 throw ProtocolFailure(code: .internalError, message: "Couldn't save the pairing on this iPhone.")
             }
             savePaired(id: id, name: name)
@@ -895,6 +901,79 @@ final class ClientStore {
         }
     }
 
+    func saveRemote(code: String) -> String? {
+        guard let setup = RemoteSetup.decode(code) else {
+            return "That code isn't valid. Copy it again from the Mac."
+        }
+        guard paired.contains(where: { $0.id == setup.hostId }) else {
+            return "That code is for a Mac this iPhone hasn't paired with. Pair on Wi-Fi first."
+        }
+        RemoteBook.save(hostId: setup.hostId, setup: setup)
+        reloadRemote()
+        return nil
+    }
+
+    func clearRemote(_ hostId: String) {
+        RemoteBook.clear(hostId: hostId)
+        reloadRemote()
+    }
+
+    func remoteSummary(for hostId: String) -> String? {
+        RemoteBook.summary(for: hostId)
+    }
+
+    private func reloadRemote() {
+        remoteHostIDs = Set(paired.map(\.id).filter { RemoteBook.hasRoute(for: $0) })
+    }
+
+    private func openStream(for id: String, name: String) async throws -> any ByteStream {
+        if let endpoint = bonjourEndpoint(for: id) {
+            do {
+                return try await TetherLink.connect(to: endpoint, allowsCellular: false, timeout: .seconds(8))
+            } catch {
+                guard remoteHostIDs.contains(id) else { throw error }
+                return try await RemoteBook.connect(hostId: id)
+            }
+        }
+        if remoteHostIDs.contains(id) {
+            try? await Task.sleep(for: .milliseconds(400))
+            if let endpoint = bonjourEndpoint(for: id) {
+                return try await TetherLink.connect(to: endpoint, allowsCellular: false, timeout: .seconds(8))
+            }
+            return try await RemoteBook.connect(hostId: id)
+        }
+        guard let endpoint = await endpoint(for: id) else {
+            throw ProtocolFailure(code: .internalError, message: L10n.unreachable(name))
+        }
+        return try await TetherLink.connect(to: endpoint, allowsCellular: false, timeout: .seconds(8))
+    }
+
+    private func remoteFailure(_ name: String, _ error: Error, remote: Bool) -> String {
+        if let failure = error as? ProtocolFailure { return failure.message }
+        if let relay = error as? RelayError {
+            switch relay {
+            case .busy:
+                return "\(name) is busy with another remote connection. Try again in a moment."
+            case .rejected:
+                return "\(name) refused the remote code. Copy a new code from the Mac."
+            case .unreachable, .badPrelude:
+                return "Couldn't reach \(name). Check that the Mac is on and the remote code is still current."
+            }
+        }
+        if remote {
+            return "Couldn't reach \(name). Check that the Mac is on and the remote code is still current."
+        }
+        return L10n.unreachable(name)
+    }
+
+    private func bonjourEndpoint(for id: String) -> NWEndpoint? {
+        if let match = discovered.first(where: { $0.matches(savedHostId: id) }) {
+            return match.endpoint
+        }
+        if discovered.count == 1 { return discovered[0].endpoint }
+        return nil
+    }
+
     private func endpoint(for id: String) async -> NWEndpoint? {
         func found() -> NWEndpoint? {
             if let match = discovered.first(where: { $0.matches(savedHostId: id) }) {
@@ -1088,22 +1167,20 @@ final class ClientStore {
         return total
     }
 
-    private static let service = "app.tether.client"
-
     private static func loadDeviceID() -> String {
         let defaultsKey = "tether.deviceId"
         if let saved = UserDefaults.standard.string(forKey: defaultsKey), !saved.isEmpty {
-            PairingSecrets.save(service: service, account: "device-id", data: Data(saved.utf8))
+            PairingSecrets.save(service: ClientKeychain.service, account: "device-id", data: Data(saved.utf8))
             return saved
         }
-        if let data = PairingSecrets.load(service: service, account: "device-id"),
+        if let data = PairingSecrets.load(service: ClientKeychain.service, account: "device-id"),
            let text = String(data: data, encoding: .utf8), !text.isEmpty {
             UserDefaults.standard.set(text, forKey: defaultsKey)
             return text
         }
         let id = UUID().uuidString
         UserDefaults.standard.set(id, forKey: defaultsKey)
-        PairingSecrets.save(service: service, account: "device-id", data: Data(id.utf8))
+        PairingSecrets.save(service: ClientKeychain.service, account: "device-id", data: Data(id.utf8))
         return id
     }
 }

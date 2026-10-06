@@ -68,11 +68,20 @@ final class HostStore {
     var pairingSucceeded = false
     var staleMessage: String?
     var networkLine = "Starting…"
+    var remoteEnabled: Bool
+    var listenPort: UInt16 = 0
+    var reachableAddress: String
+    var relayAddress: String
+    var relayStatus = ""
+    var machineAddresses: [MachineAddress] = []
 
     private let context: ModelContext
     private let runtime: HostRuntime
     private let listener = TetherListener()
     private var started = false
+    private var relayTask: Task<Void, Never>?
+    private var relayStream: NWByteStream?
+    private var relayGeneration = 0
 
     init(context: ModelContext) {
         self.context = context
@@ -82,6 +91,10 @@ final class HostStore {
         sharingEnabled = defaults.object(forKey: "sharingEnabled") as? Bool ?? true
         requireApproval = defaults.bool(forKey: "requireApproval")
         launchAtLogin = SMAppService.mainApp.status == .enabled
+        remoteEnabled = defaults.bool(forKey: "remoteEnabled")
+        reachableAddress = defaults.string(forKey: "reachableAddress") ?? ""
+        relayAddress = defaults.string(forKey: "relayAddress") ?? ""
+        machineAddresses = MachineAddresses.list()
         let runtime = HostRuntime(hostId: HostStore.loadHostID(), macName: name)
         self.runtime = runtime
         runtime.restoreKey = { deviceId in
@@ -232,6 +245,54 @@ final class HostStore {
             connected = []
             networkLine = L10n.sharingPaused
         }
+    }
+
+    var displayPort: UInt16 { listenPort > 0 ? listenPort : TetherPorts.direct }
+
+    /// Code the iPhone pastes. Nil until this Mac has an address or a relay.
+    var setupCode: String? {
+        guard remoteEnabled else { return nil }
+        let direct = RemoteAddress.preferred(override: reachableAddress, port: displayPort, interfaces: machineAddresses)
+        let relay = RemoteAddress.parse(relayAddress, defaultPort: TetherPorts.relay)
+        guard direct != nil || relay != nil else { return nil }
+        return RemoteSetup(hostId: runtime.hostId, direct: direct, relay: relay, token: loadOrCreateToken()).encoded()
+    }
+
+    func setRemoteEnabled(_ enabled: Bool) {
+        remoteEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "remoteEnabled")
+        machineAddresses = MachineAddresses.list()
+        guard sharingEnabled else {
+            if !enabled { stopRelay() }
+            return
+        }
+        fellBackFromPeerToPeer = false
+        startListening(peerToPeer: true)
+    }
+
+    func setReachableAddress(_ value: String) {
+        reachableAddress = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(reachableAddress, forKey: "reachableAddress")
+    }
+
+    func setRelayAddress(_ value: String) {
+        relayAddress = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(relayAddress, forKey: "relayAddress")
+        if sharingEnabled { startRelayIfNeeded() }
+    }
+
+    func refreshRemoteAddresses() {
+        machineAddresses = MachineAddresses.list()
+    }
+
+    private func loadOrCreateToken() -> Data {
+        let account = "remote-token"
+        if let data = PairingSecrets.load(service: Self.keychainService, account: account), data.count == 32 {
+            return data
+        }
+        let data = SymmetricKey.random().raw
+        PairingSecrets.save(service: Self.keychainService, account: account, data: data)
+        return data
     }
 
     func setName(_ name: String) {
@@ -413,10 +474,18 @@ final class HostStore {
                 HostStore.shared?.applyNetwork(state, peerToPeer: peerToPeer)
             }
         }
+        listener.onReady = { port in
+            Task { @MainActor in
+                HostStore.shared?.listenPort = port
+                HostStore.shared?.machineAddresses = MachineAddresses.list()
+            }
+        }
         do {
-            try listener.start(name: macName, hostId: runtime.hostId, peerToPeer: peerToPeer)
+            let port = remoteEnabled ? TetherPorts.direct : nil
+            try listener.start(name: macName, hostId: runtime.hostId, peerToPeer: peerToPeer, port: port)
             started = true
             networkLine = "Looking for your iPhone…"
+            startRelayIfNeeded()
         } catch {
             networkLine = "Tether couldn't start sharing."
             note(networkLine)
@@ -437,7 +506,7 @@ final class HostStore {
             networkLine = "Allow Tether under Local Network in System Settings."
         } else if state.hasPrefix("failed") {
             listenerReady = false
-            networkLine = "Not on the network."
+            networkLine = remoteEnabled ? "Couldn't listen for connections from other networks." : "Not on the network."
             note(state)
         }
     }
@@ -446,6 +515,74 @@ final class HostStore {
         listener.stop()
         started = false
         listenerReady = false
+        listenPort = 0
+        stopRelay()
+    }
+
+    private func startRelayIfNeeded() {
+        relayGeneration += 1
+        let generation = relayGeneration
+        relayTask?.cancel()
+        relayTask = nil
+        let previous = relayStream
+        relayStream = nil
+        Task { await previous?.close() }
+        guard sharingEnabled, remoteEnabled, let address = RemoteAddress.parse(relayAddress, defaultPort: TetherPorts.relay) else {
+            relayStatus = remoteEnabled ? "Add a relay address to connect from another network." : ""
+            return
+        }
+        let token = loadOrCreateToken()
+        let runtime = runtime
+        relayStatus = "Connecting to the relay…"
+        relayTask = Task.detached {
+            var delay = 1.0
+            while !Task.isCancelled {
+                do {
+                    let stream = try await RelayClient.open(role: .host, address: address, token: token)
+                    let kept = await MainActor.run { () -> Bool in
+                        guard let store = HostStore.shared, store.relayGeneration == generation else { return false }
+                        store.relayStream = stream
+                        store.relayStatus = "Relay is connected."
+                        return true
+                    }
+                    guard kept else {
+                        await stream.close()
+                        return
+                    }
+                    await HostConnection.serve(stream: stream, remote: "relay-\(UUID().uuidString)", server: runtime)
+                    if Task.isCancelled { return }
+                    let stillCurrent = await MainActor.run { HostStore.shared?.relayGeneration == generation }
+                    guard stillCurrent else { return }
+                    await MainActor.run {
+                        guard HostStore.shared?.relayGeneration == generation else { return }
+                        HostStore.shared?.relayStatus = "Relay disconnected. Trying again…"
+                    }
+                    delay = 1
+                } catch {
+                    if Task.isCancelled { return }
+                    await MainActor.run {
+                        guard HostStore.shared?.relayGeneration == generation else { return }
+                        HostStore.shared?.relayStatus = "Can't reach the relay."
+                    }
+                }
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    return
+                }
+                delay = min(delay * 2, 15)
+            }
+        }
+    }
+
+    private func stopRelay() {
+        relayGeneration += 1
+        relayTask?.cancel()
+        relayTask = nil
+        let stream = relayStream
+        relayStream = nil
+        if !remoteEnabled { relayStatus = "" }
+        Task { await stream?.close() }
     }
 
     private func apply(_ event: RuntimeEvent) {

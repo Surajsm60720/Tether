@@ -4,6 +4,7 @@ enum HostPage: String, CaseIterable, Identifiable {
     case overview
     case folders
     case phones
+    case otherNetworks
     case activity
 
     var id: String { rawValue }
@@ -13,6 +14,7 @@ enum HostPage: String, CaseIterable, Identifiable {
         case .overview: "Status"
         case .folders: "Shared folders"
         case .phones: "iPhones"
+        case .otherNetworks: "Other networks"
         case .activity: "Activity"
         }
     }
@@ -22,6 +24,7 @@ enum HostPage: String, CaseIterable, Identifiable {
         case .overview: "link"
         case .folders: "folder"
         case .phones: "iphone"
+        case .otherNetworks: "globe"
         case .activity: "list.bullet"
         }
     }
@@ -96,6 +99,8 @@ struct HostWindow: View {
             folders
         case .phones:
             phones
+        case .otherNetworks:
+            OtherNetworksSettings(store: store)
         case .activity:
             activity
         }
@@ -165,6 +170,13 @@ struct HostWindow: View {
                     Text(store.networkLine)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.trailing)
+                }
+                if store.remoteEnabled {
+                    LabeledContent("Other networks") {
+                        Text(store.relayStatus.isEmpty ? "Listening" : store.relayStatus)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                    }
                 }
                 Toggle("Sharing", isOn: Binding(
                     get: { store.sharingEnabled },

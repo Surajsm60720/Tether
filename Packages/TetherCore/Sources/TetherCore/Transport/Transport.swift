@@ -10,26 +10,41 @@ public protocol ByteStream: Sendable {
 public final class NWByteStream: ByteStream, @unchecked Sendable {
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "app.tether.connection")
+    private let bufferLock = NSLock()
+    private var buffered = Data()
+
     public init(connection: NWConnection) {
         self.connection = connection
     }
 
+    /// Puts bytes back so the next read sees them. Used after a relay prelude over-reads.
+    public func prefix(_ data: Data) {
+        guard !data.isEmpty else { return }
+        bufferLock.lock()
+        buffered.insert(contentsOf: data, at: 0)
+        bufferLock.unlock()
+    }
+
     public func start() async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let gate = ResumeGate()
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    gate.resume(continuation)
-                case .failed(let error):
-                    gate.fail(continuation, error)
-                case .cancelled:
-                    gate.fail(continuation, StreamError.closed)
-                default:
-                    break
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let gate = ResumeGate()
+                connection.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready:
+                        gate.resume(continuation)
+                    case .failed(let error):
+                        gate.fail(continuation, error)
+                    case .cancelled:
+                        gate.fail(continuation, StreamError.closed)
+                    default:
+                        break
+                    }
                 }
+                connection.start(queue: queue)
             }
-            connection.start(queue: queue)
+        } onCancel: {
+            self.connection.cancel()
         }
     }
 
@@ -46,23 +61,40 @@ public final class NWByteStream: ByteStream, @unchecked Sendable {
     }
 
     public func receive(maximumLength: Int) async throws -> Data {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-            connection.receive(minimumIncompleteLength: 1, maximumLength: maximumLength) { content, _, isComplete, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                if let content, !content.isEmpty {
-                    continuation.resume(returning: content)
-                    return
-                }
-                if isComplete {
-                    continuation.resume(throwing: StreamError.closed)
-                    return
-                }
-                continuation.resume(returning: Data())
-            }
+        if let pending = takeBuffered(maximumLength: maximumLength) {
+            return pending
         }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: maximumLength) { content, _, isComplete, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                        return
+                    }
+                    if let content, !content.isEmpty {
+                        continuation.resume(returning: content)
+                        return
+                    }
+                    if isComplete {
+                        continuation.resume(throwing: StreamError.closed)
+                        return
+                    }
+                    continuation.resume(returning: Data())
+                }
+            }
+        } onCancel: {
+            self.connection.cancel()
+        }
+    }
+
+    private func takeBuffered(maximumLength: Int) -> Data? {
+        bufferLock.lock()
+        defer { bufferLock.unlock() }
+        guard !buffered.isEmpty else { return nil }
+        let count = min(maximumLength, buffered.count)
+        let slice = Data(buffered.prefix(count))
+        buffered.removeFirst(count)
+        return slice
     }
 
     public func close() async {
@@ -74,7 +106,7 @@ public final class NWByteStream: ByteStream, @unchecked Sendable {
     }
 }
 
-private final class ResumeGate: @unchecked Sendable {
+final class ResumeGate: @unchecked Sendable {
     private let lock = NSLock()
     private var resumed = false
 

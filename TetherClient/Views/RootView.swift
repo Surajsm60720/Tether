@@ -229,11 +229,15 @@ struct HostsView: View {
     }
 
     private func status(for host: PairedItem) -> String {
-        store.discovered.contains { $0.matches(savedHostId: host.id) } ? "Available" : "Not found"
+        if store.discovered.contains(where: { $0.matches(savedHostId: host.id) }) { return "Available" }
+        if store.remoteHostIDs.contains(host.id) { return "Saved for other networks" }
+        return "Not found"
     }
 
     private func color(for host: PairedItem) -> Color {
-        store.discovered.contains { $0.matches(savedHostId: host.id) } ? Color.tether.success : Color.secondary
+        if store.discovered.contains(where: { $0.matches(savedHostId: host.id) }) { return Color.tether.success }
+        if store.remoteHostIDs.contains(host.id) { return Color.tether.warning }
+        return Color.secondary
     }
 }
 

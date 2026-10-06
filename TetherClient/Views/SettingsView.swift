@@ -52,6 +52,8 @@ struct SettingsView: View {
     @State private var confirmForget = false
     @State private var iconChoice = AppIconChoice.current
     @State private var iconError: String?
+    @State private var remoteCode = ""
+    @State private var remoteMessage: String?
 
     var body: some View {
         Form {
@@ -94,9 +96,45 @@ struct SettingsView: View {
             Section {
                 Button("Forget all Macs", role: .destructive) { confirmForget = true }
             }
+            Section {
+                if store.paired.isEmpty {
+                    Text("Pair on Wi-Fi first. Then paste the code from the Mac.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    TextField("Setup code", text: $remoteCode, axis: .vertical)
+                        .lineLimit(3...6)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button("Save") {
+                        remoteMessage = store.saveRemote(code: remoteCode)
+                        if remoteMessage == nil { remoteCode = "" }
+                    }
+                    .disabled(remoteCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    ForEach(store.paired) { host in
+                        if let summary = store.remoteSummary(for: host.id) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(host.name)
+                                Text(summary)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Button("Remove", role: .destructive) { store.clearRemote(host.id) }
+                            }
+                        }
+                    }
+                    if let remoteMessage {
+                        Text(remoteMessage)
+                            .font(.footnote)
+                            .foregroundStyle(Color.tether.danger)
+                    }
+                }
+            } header: {
+                Text("Other networks")
+            } footer: {
+                Text("Paste the code from the Mac’s Settings to open it when you are not on the same Wi-Fi. On the same Wi-Fi, Tether still connects directly.")
+            }
             Section("About") {
                 LabeledContent("Version", value: "0.1")
-                Text("Tether stays on your Wi-Fi. Files are not uploaded to the internet.")
+                Text("On the same Wi-Fi, files stay on your network. From another network, Tether uses the address or relay you paste here. A relay only carries encrypted traffic.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

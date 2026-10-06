@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Network
 import Testing
 @testable import TetherCore
 
@@ -364,4 +365,159 @@ private final class TestHost: HostServing, @unchecked Sendable {
     func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void) {}
     func ignoreConnection(for deviceId: String) {}
     func runShell(line: String, cwd: String) async -> TerminalResult? { nil }
+}
+
+@Test func remoteAddressAndSetupRoundTrip() throws {
+    #expect(RemoteAddress.parse("10.0.0.8:52173") == RemoteAddress(host: "10.0.0.8", port: 52173))
+    #expect(RemoteAddress.parse("10.0.0.8:52173")?.reach == .localNetwork)
+    #expect(RemoteAddress.parse("100.64.0.2:52173")?.reach == .tunnel)
+    #expect(RemoteAddress.parse("home.example.com:443")?.reach == .publicInternet)
+    #expect(RemoteAddress.parse("203.0.113.10", defaultPort: 52174)?.port == 52174)
+    #expect(RemoteAddress.parse("[::1]:52173")?.host == "::1")
+    #expect(RemoteAddress.parse("no-port") == nil)
+    #expect(RemoteAddress.parse("host:0") == nil)
+
+    let interfaces = [
+        MachineAddress(interfaceName: "en0", address: "192.168.1.20", kind: .local),
+        MachineAddress(interfaceName: "utun3", address: "100.64.0.2", kind: .tailscale),
+    ]
+    #expect(RemoteAddress.preferred(override: "", port: 52173, interfaces: interfaces)?.host == "100.64.0.2")
+    #expect(RemoteAddress.preferred(override: "home.example.com", port: 52173, interfaces: interfaces)?.description == "home.example.com:52173")
+
+    let token = Data(repeating: 0xAB, count: 32)
+    let setup = RemoteSetup(
+        hostId: "abcd1234",
+        direct: RemoteAddress(host: "100.64.0.2", port: 52173),
+        relay: RemoteAddress(host: "relay.example.com", port: 52174),
+        token: token
+    )
+    let decoded = RemoteSetup.decode(setup.encoded())
+    #expect(decoded == setup)
+    #expect(RemoteSetup.decode("not a code") == nil)
+    #expect(MachineAddresses.list().allSatisfy { $0.address != "127.0.0.1" })
+}
+
+@Test func relayRejectsAMalformedPrelude() async throws {
+    let server = try await RelayServer.start()
+    defer { server.stop() }
+    let address = RemoteAddress(host: "127.0.0.1", port: server.port)
+    let stream = NWByteStream(connection: NWConnection(to: address.endpoint, using: TetherLink.parameters(allowsCellular: true)))
+    try await stream.start()
+    try await stream.send(Data("OPEN nope\n".utf8))
+    let reply = try await stream.receive(maximumLength: 16)
+    #expect(String(decoding: reply, as: UTF8.self) == "NO\n")
+    await stream.close()
+}
+
+@Test func sessionWorksThroughTheRelay() async throws {
+    let server = try await RelayServer.start()
+    defer { server.stop() }
+    let token = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+    let address = RemoteAddress(host: "127.0.0.1", port: server.port)
+    let files = MemoryFileProvider()
+    files.addShare(name: "Docs", writable: false)
+    try files.writeFile(path: "/Docs/hello.txt", data: Data("remote".utf8))
+    let key = SymmetricKey(size: .bits256)
+    let host = TestHost(offer: nil, files: files)
+    host.keys["phone-1"] = key
+
+    let hostTask = Task {
+        do {
+            let stream = try await RelayClient.open(role: .host, address: address, token: token)
+            await HostConnection.serve(stream: stream, remote: "relay", server: host)
+        } catch {
+            Issue.record("Host failed to join the relay")
+        }
+    }
+    let stream = try await RelayClient.open(role: .client, address: address, token: token)
+    let client = try await ClientConnection.establish(
+        stream: stream,
+        deviceId: "phone-1",
+        deviceName: "Phone",
+        mode: .session(hostId: "host0001", key: key)
+    )
+    let entries = try await client.list(path: "/Docs")
+    #expect(entries.map(\.name) == ["hello.txt"])
+    let chunk = try await client.read(path: "/Docs/hello.txt", offset: 0, length: 100)
+    #expect(String(data: chunk.data, encoding: .utf8) == "remote")
+    await client.close()
+    hostTask.cancel()
+    await hostTask.value
+}
+
+@Test func sessionReachesADirectPort() async throws {
+    let files = MemoryFileProvider()
+    files.addShare(name: "Docs", writable: false)
+    try files.writeFile(path: "/Docs/hello.txt", data: Data("direct".utf8))
+    let key = SymmetricKey(size: .bits256)
+    let host = TestHost(offer: nil, files: files)
+    host.keys["phone-1"] = key
+    let listener = TetherListener()
+    let port: UInt16 = try await withCheckedThrowingContinuation { continuation in
+        let gate = OnceResume<UInt16>()
+        listener.onReady = { ready in
+            gate.resume(continuation, returning: ready)
+        }
+        listener.onState = { state in
+            if state.hasPrefix("failed") {
+                gate.fail(continuation, StreamError.failed(state))
+            }
+        }
+        do {
+            try listener.start(name: "Studio", hostId: "host0001", peerToPeer: false, advertise: false)
+        } catch {
+            gate.fail(continuation, error)
+        }
+    }
+    defer { listener.stop() }
+    listener.onConnection = { connection in
+        let stream = NWByteStream(connection: connection)
+        Task {
+            do {
+                try await stream.start()
+                await HostConnection.serve(stream: stream, remote: "direct", server: host)
+            } catch {
+                await stream.close()
+            }
+        }
+    }
+    guard let bound = NWEndpoint.Port(rawValue: port) else {
+        Issue.record("Missing port")
+        return
+    }
+    let stream = try await TetherLink.connect(
+        to: .hostPort(host: .ipv4(.loopback), port: bound),
+        allowsCellular: true,
+        timeout: .seconds(5)
+    )
+    let client = try await ClientConnection.establish(
+        stream: stream,
+        deviceId: "phone-1",
+        deviceName: "Phone",
+        mode: .session(hostId: "host0001", key: key)
+    )
+    let entries = try await client.list(path: "/Docs")
+    #expect(entries.map(\.name) == ["hello.txt"])
+    await client.close()
+}
+
+private final class OnceResume<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+
+    func resume(_ continuation: CheckedContinuation<T, Error>, returning value: T) {
+        lock.lock()
+        let should = !done
+        done = true
+        lock.unlock()
+        if should { continuation.resume(returning: value) }
+    }
+
+    func fail(_ continuation: CheckedContinuation<T, Error>, _ error: Error) {
+        lock.lock()
+        let should = !done
+        done = true
+        lock.unlock()
+        if should { continuation.resume(throwing: error) }
+    }
 }

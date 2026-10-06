@@ -40,7 +40,8 @@ public struct DiscoveredHost: Identifiable, Sendable, Hashable {
 public enum TetherLink {
     /// Local path only. Cellular is prohibited so a file never detours onto the public internet.
     /// TCP delayed-ACK is off and the service class asks Wi-Fi for low-latency, high-throughput treatment.
-    public static func parameters(peerToPeer: Bool = true) -> NWParameters {
+    /// `allowsCellular` is for an address or relay the user explicitly saved.
+    public static func parameters(peerToPeer: Bool = true, allowsCellular: Bool = false) -> NWParameters {
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true
         tcp.enableKeepalive = true
@@ -51,7 +52,9 @@ public enum TetherLink {
         parameters.includePeerToPeer = peerToPeer
         parameters.serviceClass = .responsiveData
         parameters.multipathServiceType = .disabled
-        parameters.prohibitedInterfaceTypes = [.cellular]
+        if !allowsCellular {
+            parameters.prohibitedInterfaceTypes = [.cellular]
+        }
         parameters.preferNoProxies = true
         return parameters
     }
@@ -67,8 +70,33 @@ public enum TetherLink {
         return parameters
     }
 
-    public static func stream(to endpoint: NWEndpoint) -> NWByteStream {
-        NWByteStream(connection: NWConnection(to: endpoint, using: parameters()))
+    public static func stream(to endpoint: NWEndpoint, allowsCellular: Bool = false) -> NWByteStream {
+        NWByteStream(connection: NWConnection(to: endpoint, using: parameters(allowsCellular: allowsCellular)))
+    }
+
+    /// Opens a TCP connection and gives up if it is still waiting when `timeout` elapses.
+    public static func connect(to endpoint: NWEndpoint, allowsCellular: Bool = false, timeout: Duration = .seconds(8)) async throws -> NWByteStream {
+        let stream = stream(to: endpoint, allowsCellular: allowsCellular)
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { try await stream.start() }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw StreamError.timedOut
+                }
+                do {
+                    try await group.next()
+                    group.cancelAll()
+                } catch {
+                    group.cancelAll()
+                    throw error
+                }
+            }
+            return stream
+        } catch {
+            await stream.close()
+            throw error
+        }
     }
 }
 
@@ -175,6 +203,9 @@ public final class TetherListener: @unchecked Sendable {
     private var triedLegacyName = false
     public var onConnection: (@Sendable (NWConnection) -> Void)?
     public var onState: (@Sendable (String) -> Void)?
+    public var onReady: (@Sendable (UInt16) -> Void)?
+    private var requestedPort: NWEndpoint.Port?
+    private var shouldAdvertise = true
 
     public init() {}
 
@@ -188,7 +219,9 @@ public final class TetherListener: @unchecked Sendable {
         serviceType: String = TetherCoreInfo.serviceType,
         namePrefix: String = "Tether",
         role: String = "mac",
-        plainName: Bool = false
+        plainName: Bool = false,
+        port: UInt16? = nil,
+        advertise: Bool = true
     ) throws {
         advertisedName = name
         advertisedID = hostId
@@ -198,6 +231,12 @@ public final class TetherListener: @unchecked Sendable {
         usePlainName = plainName
         fellBack = false
         triedLegacyName = false
+        shouldAdvertise = advertise
+        if let port, port > 0 {
+            requestedPort = NWEndpoint.Port(rawValue: port)
+        } else {
+            requestedPort = nil
+        }
         try begin(peerToPeer: peerToPeer, legacyName: false)
     }
 
@@ -208,7 +247,13 @@ public final class TetherListener: @unchecked Sendable {
 
     private func begin(peerToPeer: Bool, legacyName: Bool) throws {
         listener?.cancel()
-        let listener = try NWListener(using: TetherLink.discoveryParameters(peerToPeer: peerToPeer))
+        let parameters = TetherLink.discoveryParameters(peerToPeer: peerToPeer)
+        let listener: NWListener
+        if let requestedPort {
+            listener = try NWListener(using: parameters, on: requestedPort)
+        } else {
+            listener = try NWListener(using: parameters)
+        }
         let instance = (usePlainName || legacyName)
             ? "\(advertisedPrefix)-\(advertisedID)"
             : BonjourHostID.instanceName(displayName: advertisedName, id: advertisedID, fallbackPrefix: advertisedPrefix)
@@ -220,12 +265,14 @@ public final class TetherListener: @unchecked Sendable {
         ]
         if !safeName.isEmpty { txt["name"] = safeName }
         let record = NWTXTRecord(txt)
-        listener.service = NWListener.Service(
-            name: instance,
-            type: advertisedType,
-            domain: nil,
-            txtRecord: record
-        )
+        if shouldAdvertise {
+            listener.service = NWListener.Service(
+                name: instance,
+                type: advertisedType,
+                domain: nil,
+                txtRecord: record
+            )
+        }
         listener.newConnectionHandler = { [weak self] connection in
             self?.onConnection?(connection)
         }
@@ -238,6 +285,9 @@ public final class TetherListener: @unchecked Sendable {
             switch state {
             case .ready:
                 self?.onState?("ready")
+                if let bound = self?.listener?.port?.rawValue, bound > 0 {
+                    self?.onReady?(bound)
+                }
             case .failed(let error):
                 TetherLog.discovery.error("listener failed: \(error.localizedDescription, privacy: .public)")
                 if self?.fellBack == false {
@@ -260,8 +310,8 @@ public final class TetherListener: @unchecked Sendable {
                 self?.onState?("starting")
             }
         }
-        listener.start(queue: queue)
         self.listener = listener
+        listener.start(queue: queue)
     }
 }
 
