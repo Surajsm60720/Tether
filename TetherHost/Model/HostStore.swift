@@ -84,6 +84,9 @@ final class HostStore {
         launchAtLogin = SMAppService.mainApp.status == .enabled
         let runtime = HostRuntime(hostId: HostStore.loadHostID(), macName: name)
         self.runtime = runtime
+        runtime.restoreKey = { deviceId in
+            PairingSecrets.load(service: HostStore.keychainService, account: "device.\(deviceId)")
+        }
         runtime.onEvent = { event in
             Task { @MainActor in
                 HostStore.shared?.apply(event)
@@ -102,7 +105,9 @@ final class HostStore {
 
     var nearbyPhones: [DiscoveredHost] = []
     var phoneStatus: String?
-    private let phoneBrowser = TetherBrowser(serviceType: TetherCoreInfo.phoneServiceType)
+    private var seenPhones: [String: [DiscoveredHost]] = [:]
+    private let sameNetworkBrowser = TetherBrowser(serviceType: TetherCoreInfo.serviceType)
+    private let phoneServiceBrowser = TetherBrowser(serviceType: TetherCoreInfo.phoneServiceType)
 
     func useRandomName() {
         setName(FriendlyName.make())
@@ -141,12 +146,52 @@ final class HostStore {
     }
 
     private func startPhoneBrowser() {
-        phoneBrowser.onUpdate = { phones in
+        wire(sameNetworkBrowser, key: "lan") { $0.isPhone }
+        wire(phoneServiceBrowser, key: "phone") { _ in true }
+    }
+
+    private func wire(_ browser: TetherBrowser, key: String, allow: @escaping @Sendable (DiscoveredHost) -> Bool) {
+        browser.onUpdate = { hosts in
+            let kept = hosts.filter(allow)
             Task { @MainActor in
-                HostStore.shared?.nearbyPhones = phones
+                HostStore.shared?.rememberPhones(key, kept)
             }
         }
-        phoneBrowser.start()
+        browser.onState = { state in
+            Task { @MainActor in
+                guard let store = HostStore.shared else { return }
+                if state == "ready" {
+                    if store.phoneStatus == "Allow Tether under Local Network in System Settings, then look again."
+                        || store.phoneStatus == "Looking for your iPhone…" {
+                        store.phoneStatus = nil
+                    }
+                } else if state.hasPrefix("waiting") || state.hasPrefix("failed") {
+                    store.phoneStatus = "Allow Tether under Local Network in System Settings, then look again."
+                }
+            }
+        }
+        browser.start()
+    }
+
+    private func rememberPhones(_ key: String, _ hosts: [DiscoveredHost]) {
+        seenPhones[key] = hosts
+        var merged: [String: DiscoveredHost] = [:]
+        for list in seenPhones.values {
+            for host in list where host.hostId != runtime.hostId {
+                if let existing = merged[host.hostId], existing.hasFriendlyName {
+                    continue
+                }
+                merged[host.hostId] = host
+            }
+        }
+        nearbyPhones = merged.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    func refreshPhones(announce: Bool = true) {
+        if announce { phoneStatus = "Looking for your iPhone…" }
+        sameNetworkBrowser.stop()
+        phoneServiceBrowser.stop()
+        startPhoneBrowser()
     }
 
     private static func storedName(defaults: UserDefaults) -> String {
@@ -292,8 +337,8 @@ final class HostStore {
     }
 
     func revoke(_ device: DeviceItem) {
+        PairingSecrets.delete(service: Self.keychainService, account: "device.\(device.id)")
         runtime.revoke(deviceId: device.id)
-        KeychainStore.delete(service: Self.keychainService, account: "device.\(device.id)")
         let records = (try? context.fetch(FetchDescriptor<DeviceRecord>())) ?? []
         if let record = records.first(where: { $0.deviceId == device.id }) {
             context.delete(record)
@@ -340,7 +385,7 @@ final class HostStore {
             .sorted { $0.pairedAt > $1.pairedAt }
         var keys: [String: SymmetricKey] = [:]
         for device in devices {
-            if let data = try? KeychainStore.load(service: Self.keychainService, account: "device.\(device.id)") {
+            if let data = PairingSecrets.load(service: Self.keychainService, account: "device.\(device.id)"), data.count == 32 {
                 keys[device.id] = SymmetricKey(data: data)
             }
         }
@@ -408,9 +453,8 @@ final class HostStore {
         case let .log(text):
             note(text)
         case let .paired(id, name, key):
-            do {
-                try KeychainStore.save(service: Self.keychainService, account: "device.\(id)", data: key)
-            } catch {
+            PairingSecrets.save(service: Self.keychainService, account: "device.\(id)", data: key)
+            if PairingSecrets.load(service: Self.keychainService, account: "device.\(id)") == nil {
                 note("Couldn't save the pairing key.")
             }
             let records = (try? context.fetch(FetchDescriptor<DeviceRecord>())) ?? []
@@ -455,16 +499,23 @@ final class HostStore {
         if activity.count > 100 { activity.removeLast(activity.count - 100) }
     }
 
-    private static let keychainService = "app.tether.host"
+    private nonisolated static let keychainService = "app.tether.host"
 
     private static func loadHostID() -> String {
-        if let data = try? KeychainStore.load(service: keychainService, account: "host-id"),
-           let text = String(data: data, encoding: .utf8), !text.isEmpty {
+        let defaults = UserDefaults.standard
+        if let saved = defaults.string(forKey: "hostId"), saved.count == 8 {
+            PairingSecrets.save(service: keychainService, account: "host-id", data: Data(saved.utf8))
+            return saved
+        }
+        if let data = PairingSecrets.load(service: keychainService, account: "host-id"),
+           let text = String(data: data, encoding: .utf8), text.count == 8 {
+            defaults.set(text, forKey: "hostId")
             return text
         }
         let raw = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8).lowercased()
         let id = String(raw)
-        try? KeychainStore.save(service: keychainService, account: "host-id", data: Data(id.utf8))
+        defaults.set(id, forKey: "hostId")
+        PairingSecrets.save(service: keychainService, account: "host-id", data: Data(id.utf8))
         return id
     }
 }
@@ -475,7 +526,10 @@ final class HostRuntime: HostServing, @unchecked Sendable {
     private let lock = NSLock()
     private var offer: PairingOffer?
     private var keys: [String: SymmetricKey] = [:]
+    private var revoked: Set<String> = []
     private var closers: [String: @Sendable () -> Void] = [:]
+    /// Reads a pairing key from disk when it is not in memory yet. Used after a relaunch.
+    var restoreKey: (@Sendable (String) -> Data?)?
     private var macName: String
     private var requireApproval = false
     private let provider = DiskFileProvider()
@@ -493,10 +547,20 @@ final class HostRuntime: HostServing, @unchecked Sendable {
         onEvent?(.offerConsumed)
     }
 
-    func deviceKey(for deviceId: String) -> SymmetricKey? { sync { keys[deviceId] } }
+    func deviceKey(for deviceId: String) -> SymmetricKey? {
+        if let key = sync({ keys[deviceId] }) { return key }
+        if sync({ revoked.contains(deviceId) }) { return nil }
+        guard let data = restoreKey?(deviceId), data.count == 32 else { return nil }
+        let key = SymmetricKey(data: data)
+        sync { keys[deviceId] = key }
+        return key
+    }
 
     func rememberDevice(id: String, name: String, key: SymmetricKey) {
-        sync { keys[id] = key }
+        sync {
+            revoked.remove(id)
+            keys[id] = key
+        }
         onEvent?(.paired(id: id, name: name, key: key.raw))
     }
 
@@ -573,10 +637,19 @@ final class HostRuntime: HostServing, @unchecked Sendable {
     func setRequireApproval(_ value: Bool) { sync { requireApproval = value } }
     func setOffer(_ offer: PairingOffer?) { sync { self.offer = offer } }
     func setShares(_ shares: [MountedShare]) { provider.setShares(shares) }
-    func setKeys(_ keys: [String: SymmetricKey]) { sync { self.keys = keys } }
+    func setKeys(_ keys: [String: SymmetricKey]) {
+        sync {
+            var next = keys
+            for (id, key) in self.keys where next[id] == nil && !revoked.contains(id) {
+                next[id] = key
+            }
+            self.keys = next
+        }
+    }
 
     func revoke(deviceId: String) {
         let close: (@Sendable () -> Void)? = sync {
+            revoked.insert(deviceId)
             keys[deviceId] = nil
             return closers[deviceId]
         }

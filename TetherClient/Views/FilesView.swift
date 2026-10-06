@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 struct SessionView: View {
     @Bindable var store: ClientStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var savedMessage: String?
 
     var body: some View {
@@ -14,14 +15,17 @@ struct SessionView: View {
                 HStack(spacing: 8) {
                     Image(systemName: store.reconnecting ? "antenna.radiowaves.left.and.right" : "wifi.slash")
                         .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(store.reconnecting ? Color.tether.warning : Color.tether.danger)
+                        .symbolEffect(.pulse, options: .repeating, isActive: store.reconnecting && !reduceMotion)
                     Text(store.reconnecting ? "Reconnecting…" : (store.statusMessage ?? "Connection lost. Reconnecting…"))
-                        .font(.footnote)
+                        .font(TetherType.footnote)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity)
                 .background(.bar)
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
             TabView(selection: $store.sessionTab) {
                 FilesView(store: store)
@@ -35,6 +39,7 @@ struct SessionView: View {
                     .tabItem { Label(L10n.transfers, systemImage: "arrow.up.arrow.down.circle") }
             }
         }
+        .animation(TetherMotion.spring(reduceMotion), value: store.reconnecting || store.offline)
         .sheet(item: $store.preview) { item in
             NavigationStack {
                 QuickLookPreview(url: item.url, title: item.title)
@@ -68,6 +73,7 @@ struct SessionView: View {
 
 struct FilesView: View {
     @Bindable var store: ClientStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var picker: PhotosPickerItem?
     @State private var importing = false
     @State private var savedMessage: String?
@@ -86,6 +92,8 @@ struct FilesView: View {
                     listing
                 }
             }
+            .animation(TetherMotion.fade(reduceMotion), value: store.path)
+            .animation(TetherMotion.fade(reduceMotion), value: store.grid)
             .navigationTitle(store.folderTitle)
             .navigationBarTitleDisplayMode(store.path == "/" ? .large : .inline)
             .searchable(text: $store.searchText, prompt: "Filter")
@@ -111,11 +119,21 @@ struct FilesView: View {
         } message: {
             Text(savedMessage ?? "")
         }
-        .alert(L10n.downloadConfirm(Format.bytes(store.pendingLarge?.size ?? 0)), isPresented: Binding(
-            get: { store.pendingLarge != nil },
-            set: { if !$0 { store.pendingLarge = nil } }
-        )) {
-            Button("Download") { Task { await store.confirmLargeDownload() } }
+        .alert("Saved", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(store.notice ?? "")
+        }
+        .alert(
+            store.largeFileWillPreview
+                ? "Preview \(Format.bytes(store.pendingLarge?.size ?? 0))?"
+                : L10n.downloadConfirm(Format.bytes(store.pendingLarge?.size ?? 0)),
+            isPresented: Binding(
+                get: { store.pendingLarge != nil },
+                set: { if !$0 { store.pendingLarge = nil } }
+            )
+        ) {
+            Button(store.largeFileWillPreview ? "Preview" : "Download") { Task { await store.confirmLargeDownload() } }
             Button("Cancel", role: .cancel) { store.pendingLarge = nil }
         }
         .alert(L10n.readOnly, isPresented: $store.readOnlyAlert) {
@@ -200,10 +218,19 @@ struct FilesView: View {
             }
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
+            Button(store.selecting ? "Done" : "Select") {
+                store.selecting.toggle()
+                if !store.selecting { store.selection.removeAll() }
+            }
+            if store.selecting {
+                Button("Download", systemImage: "arrow.down.circle") {
+                    store.downloadSelection()
+                }
+                .disabled(store.selection.isEmpty)
+            }
             Menu {
                 Button(store.grid ? "List" : "Icons", systemImage: store.grid ? "list.bullet" : "square.grid.2x2") {
                     store.grid.toggle()
-                    UISelectionFeedbackGenerator().selectionChanged()
                 }
                 Picker("Sort", selection: $store.sort) {
                     ForEach(FileSort.allCases) { item in
@@ -219,6 +246,7 @@ struct FilesView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
+            .sensoryFeedback(.selection, trigger: store.grid)
         }
     }
 
@@ -233,11 +261,13 @@ struct FileRow: View {
             Task { await store.open(entry) }
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: Format.symbol(for: entry))
-                    .font(.title2)
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(entry.kind == .dir ? Color.tether.accentText : Color.primary)
-                    .frame(width: 40, height: 40)
+                if store.selecting {
+                    Image(systemName: store.selection.contains(entry.name) ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(store.selection.contains(entry.name) ? Color.tether.accent : Color.secondary)
+                        .frame(width: 28, height: 44)
+                }
+                FileArtwork(store: store, entry: entry, side: 40)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.name)
                         .font(.body)
@@ -249,7 +279,7 @@ struct FileRow: View {
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
-                Spacer()
+                Spacer(minLength: 8)
                 if let transfer = store.transfers.first(where: { $0.name == entry.name && $0.state == .active }) {
                     ProgressView(value: transfer.fraction)
                         .frame(width: 28, height: 28)
@@ -259,17 +289,15 @@ struct FileRow: View {
         .frame(minHeight: 44)
         .accessibilityLabel(accessibilityText)
         .swipeActions(edge: .leading) {
-            if entry.kind != .dir {
-                Button("Download") { store.download(entry, preview: false) }
-                    .tint(Color.tether.accent)
-            }
+            Button("Download") { store.download(entry, preview: false) }
+                .tint(Color.tether.accent)
         }
         .contextMenu {
             Button("Get Info") { store.showInfo(entry) }
             if entry.kind != .dir {
                 Button("Preview") { store.download(entry, preview: true) }
-                Button("Download") { store.download(entry, preview: false) }
             }
+            Button("Download") { store.download(entry, preview: false) }
         }
     }
 
@@ -282,41 +310,97 @@ struct FileRow: View {
 }
 
 struct FileGridItem: View {
-    var store: ClientStore
+    @Bindable var store: ClientStore
     var entry: FileEntry
-    @State private var image: Image?
+
+    private var selected: Bool { store.selection.contains(entry.name) }
 
     var body: some View {
         Button {
             Task { await store.open(entry) }
         } label: {
             VStack(spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(.secondarySystemGroupedBackground))
-                    if let image {
-                        image.resizable().scaledToFill()
-                    } else {
-                        Image(systemName: Format.symbol(for: entry))
-                            .font(.title)
-                            .symbolRenderingMode(.hierarchical)
+                FileArtwork(store: store, entry: entry, side: nil)
+                    .overlay(alignment: .topTrailing) {
+                        if store.selecting {
+                            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                .font(.title3)
+                                .foregroundStyle(selected ? Color.tether.accent : Color.secondary)
+                                .padding(6)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .padding(6)
+                        }
                     }
-                }
-                .frame(height: 110)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 Text(entry.name)
                     .font(.caption)
+                    .foregroundStyle(.primary)
                     .lineLimit(2)
                     .truncationMode(.middle)
                     .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .top)
             }
         }
         .buttonStyle(.plain)
-        .task {
-            guard entry.kind != .dir, let data = await store.thumbnail(for: entry), let uiImage = UIImage(data: data) else { return }
-            withAnimation(.easeInOut(duration: 0.15)) {
-                image = Image(uiImage: uiImage)
+        .contextMenu {
+            Button("Get Info") { store.showInfo(entry) }
+            if entry.kind != .dir {
+                Button("Preview") { store.download(entry, preview: true) }
             }
+            Button("Download") { store.download(entry, preview: false) }
+        }
+    }
+}
+
+struct FileArtwork: View {
+    @Bindable var store: ClientStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var entry: FileEntry
+    /// Fixed side length for list rows. Nil fills a square cell in the icon grid.
+    var side: CGFloat?
+    @State private var image: Image?
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: side == 40 ? 8 : 10, style: .continuous)
+        Color(.secondarySystemGroupedBackground)
+            .modifier(ArtworkFrame(side: side))
+            .overlay {
+                if let image {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Image(systemName: Format.symbol(for: entry))
+                        .font(side == 40 ? .title2 : .title)
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(entry.kind == .dir ? Color.tether.accentText : Color.primary)
+                }
+            }
+            .clipShape(shape)
+            .overlay {
+                shape.strokeBorder(.quaternary, lineWidth: 1)
+            }
+            .task(id: taskID) {
+                image = nil
+                guard entry.kind != .dir else { return }
+                guard let data = await store.thumbnail(for: entry), let uiImage = UIImage(data: data) else { return }
+                withAnimation(TetherMotion.fade(reduceMotion)) {
+                    image = Image(uiImage: uiImage)
+                }
+            }
+    }
+
+    private var taskID: String { "\(store.path)/\(entry.name)/\(entry.size)/\(entry.mtime)" }
+}
+
+private struct ArtworkFrame: ViewModifier {
+    var side: CGFloat?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let side {
+            content.frame(width: side, height: side)
+        } else {
+            content.aspectRatio(1, contentMode: .fit)
         }
     }
 }
@@ -329,8 +413,22 @@ struct FileInfoView: View {
             Section {
                 LabeledContent("Name", value: info.entry.name)
                 LabeledContent("Kind", value: Format.kind(info.entry))
-                LabeledContent("Size", value: info.entry.kind == .dir ? (info.entry.childCount.map { "\($0) items" } ?? "Folder") : Format.bytes(info.entry.size))
+                if let typeName = typeDescription {
+                    LabeledContent("Type", value: typeName)
+                }
+                if !fileExtension.isEmpty {
+                    LabeledContent("Extension", value: fileExtension)
+                }
+                LabeledContent("Size", value: Format.bytes(info.entry.size))
+                LabeledContent("Exact size", value: Format.exactBytes(info.entry.size))
+                if info.entry.kind == .dir, let count = info.entry.childCount {
+                    LabeledContent("Contents", value: "\(count) \(count == 1 ? "item" : "items")")
+                }
+                if let created = info.entry.created {
+                    LabeledContent("Created", value: Format.when(Date(timeIntervalSince1970: created), includeTime: true))
+                }
                 LabeledContent("Modified", value: Format.when(info.entry.modified, includeTime: true))
+                LabeledContent("Access", value: info.writable ? "Can add files" : "Read only")
             }
             Section {
                 Text(info.path)
@@ -342,6 +440,17 @@ struct FileInfoView: View {
         }
         .navigationTitle("Info")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var fileExtension: String {
+        (info.entry.name as NSString).pathExtension
+    }
+
+    private var typeDescription: String? {
+        guard let uti = info.entry.uti, let type = UTType(uti) else { return info.entry.uti }
+        let title = type.localizedDescription ?? uti
+        if title.caseInsensitiveCompare(Format.kind(info.entry)) == .orderedSame { return uti }
+        return title
     }
 }
 

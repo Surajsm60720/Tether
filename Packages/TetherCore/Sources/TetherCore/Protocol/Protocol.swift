@@ -99,6 +99,8 @@ public struct FileEntry: Codable, Sendable, Equatable, Identifiable {
     public var uti: String?
     /// Number of immediate children when the host already knows it.
     public var childCount: Int?
+    /// Creation time, seconds since 1970. Absent when the host does not know it.
+    public var created: TimeInterval?
 
     public var id: String { name }
 
@@ -108,7 +110,8 @@ public struct FileEntry: Codable, Sendable, Equatable, Identifiable {
         size: UInt64,
         mtime: TimeInterval,
         uti: String? = nil,
-        childCount: Int? = nil
+        childCount: Int? = nil,
+        created: TimeInterval? = nil
     ) {
         self.name = name
         self.kind = kind
@@ -116,6 +119,7 @@ public struct FileEntry: Codable, Sendable, Equatable, Identifiable {
         self.mtime = mtime
         self.uti = uti
         self.childCount = childCount
+        self.created = created
     }
 
     public var modified: Date { Date(timeIntervalSince1970: mtime) }

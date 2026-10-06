@@ -25,25 +25,26 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
     }
 
     public func list(path: VirtualPath, offset: Int, limit: Int, includeHidden: Bool) async throws -> [FileEntry] {
+        let budget = MeasureBudget()
         if path.isRoot {
-            let info = await shares()
-            let start = min(max(offset, 0), info.count)
-            return info[start..<min(start + ProviderSupport.clampLimit(limit), info.count)].map { share in
-                FileEntry(name: share.name, kind: .dir, size: 0, mtime: Date().timeIntervalSince1970)
+            let mounts = sync { self.mounts }
+            let entries = mounts.map { share in
+                directoryEntry(name: share.name, url: share.root, budget: budget, includeHidden: includeHidden)
             }
+            let start = min(max(offset, 0), entries.count)
+            return Array(entries[start..<min(start + ProviderSupport.clampLimit(limit), entries.count)])
         }
         let located = try locate(path, leafMustExist: true)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: located.url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw ProtocolFailure(code: .badRequest, message: "That item is not a folder.")
         }
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey, .typeIdentifierKey, .nameKey]
         let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
-        let urls = try FileManager.default.contentsOfDirectory(at: located.url, includingPropertiesForKeys: keys, options: options)
+        let urls = try FileManager.default.contentsOfDirectory(at: located.url, includingPropertiesForKeys: Array(Self.metaKeys), options: options)
         let sorted = urls.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         let entries = sorted.compactMap { url -> FileEntry? in
             if url.lastPathComponent.hasPrefix(".tether-upload-") { return nil }
-            return entry(for: url)
+            return entry(for: url, budget: budget, includeHidden: includeHidden)
         }
         let start = min(max(offset, 0), entries.count)
         let end = min(start + ProviderSupport.clampLimit(limit), entries.count)
@@ -51,12 +52,20 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
     }
 
     public func stat(path: VirtualPath) async throws -> FileEntry {
+        let budget = MeasureBudget()
         if path.isRoot {
-            let info = await shares()
-            return FileEntry(name: "/", kind: .dir, size: 0, mtime: Date().timeIntervalSince1970, childCount: info.count)
+            let mounts = sync { self.mounts }
+            var size: UInt64 = 0
+            var complete = true
+            for share in mounts {
+                let measured = contentsSize(of: share.root, budget: budget, includeHidden: false)
+                size += measured.bytes
+                if !measured.complete { complete = false }
+            }
+            return FileEntry(name: "/", kind: .dir, size: complete ? size : 0, mtime: Date().timeIntervalSince1970, childCount: mounts.count)
         }
         let located = try locate(path, leafMustExist: true)
-        guard let entry = entry(for: located.url) else {
+        guard let entry = entry(for: located.url, budget: budget, includeHidden: false) else {
             throw ProtocolFailure(code: .notFound, message: "That item isn't here.")
         }
         return entry
@@ -252,19 +261,116 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
         }
     }
 
-    private func entry(for url: URL) -> FileEntry? {
-        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey, .typeIdentifierKey, .nameKey])
+    private static let metaKeys: Set<URLResourceKey> = [
+        .isDirectoryKey, .isSymbolicLinkKey, .isPackageKey, .isAliasFileKey,
+        .fileSizeKey, .totalFileSizeKey, .contentModificationDateKey,
+        .creationDateKey, .typeIdentifierKey, .nameKey,
+    ]
+
+    private func directoryEntry(name: String, url: URL, budget: MeasureBudget, includeHidden: Bool) -> FileEntry {
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey, .typeIdentifierKey])
+        let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
+        let children = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: options))?.count
+        let measured = contentsSize(of: url, budget: budget, includeHidden: includeHidden)
+        return FileEntry(
+            name: name,
+            kind: .dir,
+            size: measured.complete ? measured.bytes : 0,
+            mtime: values?.contentModificationDate?.timeIntervalSince1970 ?? Date().timeIntervalSince1970,
+            uti: values?.typeIdentifier,
+            childCount: children,
+            created: values?.creationDate?.timeIntervalSince1970
+        )
+    }
+
+    private func entry(for url: URL, budget: MeasureBudget, includeHidden: Bool) -> FileEntry? {
+        let values = try? url.resourceValues(forKeys: Self.metaKeys)
         let name = values?.name ?? url.lastPathComponent
-        let mtime = values?.contentModificationDate?.timeIntervalSince1970 ?? Date().timeIntervalSince1970
-        if values?.isSymbolicLink == true {
-            let resolved = url.resolvingSymlinksInPath()
-            let resolvedDir = (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-            return FileEntry(name: name, kind: .link, size: UInt64(values?.fileSize ?? 0), mtime: mtime, uti: values?.typeIdentifier, childCount: resolvedDir ? nil : nil)
+        if values == nil {
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                return directoryEntry(name: name, url: url, budget: budget, includeHidden: includeHidden)
+            }
+        }
+        let mtime = values?.contentModificationDate?.timeIntervalSince1970
+            ?? attributeDate(url, key: .modificationDate)
+            ?? Date().timeIntervalSince1970
+        let created = values?.creationDate?.timeIntervalSince1970 ?? attributeDate(url, key: .creationDate)
+        if values?.isSymbolicLink == true || values?.isAliasFile == true {
+            return FileEntry(
+                name: name,
+                kind: .link,
+                size: Self.reportedBytes(values, url: url),
+                mtime: mtime,
+                uti: values?.typeIdentifier,
+                created: created
+            )
         }
         if values?.isDirectory == true {
-            return FileEntry(name: name, kind: .dir, size: 0, mtime: mtime, uti: values?.typeIdentifier)
+            return directoryEntry(name: name, url: url, budget: budget, includeHidden: includeHidden)
         }
-        return FileEntry(name: name, kind: .file, size: UInt64(values?.fileSize ?? 0), mtime: mtime, uti: values?.typeIdentifier)
+        return FileEntry(
+            name: name,
+            kind: .file,
+            size: Self.reportedBytes(values, url: url),
+            mtime: mtime,
+            uti: values?.typeIdentifier,
+            created: created
+        )
+    }
+
+    /// Logical size, then allocated size, then the file attributes. Packages and some
+    /// document bundles report a nil `fileSize` until one of the later sources is tried.
+    private static func reportedBytes(_ values: URLResourceValues?, url: URL) -> UInt64 {
+        let logical = values?.fileSize ?? 0
+        let stored = values?.totalFileSize ?? 0
+        let best = max(logical, stored)
+        if best > 0 { return UInt64(best) }
+        if let number = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber, number.uint64Value > 0 {
+            return number.uint64Value
+        }
+        return UInt64(best)
+    }
+
+    private func attributeDate(_ url: URL, key: FileAttributeKey) -> TimeInterval? {
+        guard let date = (try? FileManager.default.attributesOfItem(atPath: url.path))?[key] as? Date else { return nil }
+        return date.timeIntervalSince1970
+    }
+
+    /// Sums visible file bytes. Stops early on huge trees and reports the walk as incomplete
+    /// so the caller does not publish a misleading partial size.
+    private func contentsSize(of url: URL, budget: MeasureBudget, includeHidden: Bool) -> (bytes: UInt64, complete: Bool) {
+        if budget.exhausted { return (0, false) }
+        let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isAliasFileKey, .fileSizeKey, .totalFileSizeKey],
+            options: options
+        ) else {
+            return (0, false)
+        }
+        var total: UInt64 = 0
+        var complete = true
+        for child in urls where !child.lastPathComponent.hasPrefix(".tether-upload-") {
+            if budget.exhausted {
+                complete = false
+                break
+            }
+            budget.remaining -= 1
+            let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isAliasFileKey, .fileSizeKey, .totalFileSizeKey])
+            if values?.isSymbolicLink == true || values?.isAliasFile == true {
+                total += Self.reportedBytes(values, url: child)
+                continue
+            }
+            if values?.isDirectory == true {
+                let nested = contentsSize(of: child, budget: budget, includeHidden: includeHidden)
+                total += nested.bytes
+                if !nested.complete { complete = false }
+                continue
+            }
+            total += Self.reportedBytes(values, url: child)
+        }
+        return (total, complete)
     }
 
     private func uniqueDestination(directory: URL, name: String, overwrite: Bool) -> URL {
@@ -295,6 +401,12 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
 private struct Location {
     var share: MountedShare
     var url: URL
+}
+
+private final class MeasureBudget {
+    var remaining = 20_000
+    var deadline = Date().addingTimeInterval(2)
+    var exhausted: Bool { remaining <= 0 || Date() >= deadline }
 }
 
 private final class DiskUpload: @unchecked Sendable {

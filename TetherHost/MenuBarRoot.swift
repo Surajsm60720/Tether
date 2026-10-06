@@ -7,14 +7,69 @@ struct MenuBarRoot: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.appName)
-                .font(.headline)
-            Text(store.statusText)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Text(store.networkLine)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: store.sharingEnabled ? "laptopcomputer" : "pause.circle")
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(store.sharingEnabled ? Color.tether.accentText : Color.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.appName)
+                        .font(TetherType.section)
+                    Text(store.statusText)
+                        .font(TetherType.secondary)
+                        .foregroundStyle(.secondary)
+                    Text(store.networkLine)
+                        .font(TetherType.meta)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            Toggle("Sharing", isOn: Binding(
+                get: { store.sharingEnabled },
+                set: { store.setSharing($0) }
+            ))
+            .toggleStyle(.switch)
+            .font(TetherType.secondary)
+
+            if !store.connected.isEmpty {
+                Divider()
+                Text(L10n.connectedDevices)
+                    .font(TetherType.meta)
+                    .foregroundStyle(.secondary)
+                ForEach(store.connected.prefix(3)) { device in
+                    HStack {
+                        Circle().fill(Color.tether.success).frame(width: 8, height: 8)
+                        Text(device.name)
+                            .font(TetherType.body)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Button(L10n.disconnect) { store.disconnect(device) }
+                            .font(TetherType.meta)
+                    }
+                }
+            }
+
+            if !store.shares.isEmpty {
+                Divider()
+                Text(L10n.sharedFolders)
+                    .font(TetherType.meta)
+                    .foregroundStyle(.secondary)
+                ForEach(store.shares.prefix(3)) { share in
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder.fill")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(Color.tether.accentText)
+                        Text(share.name)
+                            .font(TetherType.body)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        Text(share.writable ? L10n.canUpload : L10n.readOnly)
+                            .font(TetherType.meta)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             Divider()
             Button("Open Tether") { showMainWindow() }
                 .keyboardShortcut("o")
@@ -22,11 +77,15 @@ struct MenuBarRoot: View {
                 store.beginPairing()
                 openWindow(id: "pair")
             }
+            SettingsLink {
+                Text(L10n.settings)
+            }
             Button(L10n.quit) { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
         }
         .padding(16)
-        .frame(width: 280, alignment: .leading)
+        .frame(width: 320, alignment: .leading)
+        .tint(Color.tether.accent)
     }
 
     private func showMainWindow() {

@@ -59,6 +59,17 @@ struct SettingsView: View {
                 get: { store.sharingEnabled },
                 set: { store.setSharing($0) }
             ))
+            Picker("Icon", selection: Binding(
+                get: { AppIconChoice.current },
+                set: { $0.save() }
+            )) {
+                ForEach(AppIconChoice.allCases) { choice in
+                    Text(choice.title).tag(choice)
+                }
+            }
+            Text("Light and Dark follow the Mac’s appearance while Tether is open.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
         .onAppear { nameDraft = store.macName }

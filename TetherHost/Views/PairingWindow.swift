@@ -11,16 +11,18 @@ struct PairingWindow: View {
         VStack(spacing: 24) {
             if store.pairingSucceeded {
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 72))
+                    .font(TetherType.hero)
                     .foregroundStyle(Color.tether.success)
                     .symbolRenderingMode(.hierarchical)
+                    .symbolEffect(.bounce, value: store.pairingSucceeded)
                     .padding(.top, 32)
                 Text(L10n.pairSuccess)
-                    .font(.title2)
+                    .font(TetherType.title)
             } else if let offer = store.offer {
                 qrCard(offer.qr)
                 Text(offer.manualCode)
-                    .font(.system(.title3, design: .monospaced))
+                    .font(TetherType.code)
+                    .monospacedDigit()
                 countdown(until: offer.expiresAt)
                 Text(L10n.pairScan)
                     .font(.body)
@@ -71,12 +73,13 @@ struct PairingWindow: View {
                         .trim(from: 0, to: fraction)
                         .stroke(remaining < 20 ? Color.tether.warning : Color.tether.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                         .rotationEffect(.degrees(-90))
-                        .animation(reduceMotion ? nil : .snappy, value: fraction)
+                        .animation(TetherMotion.spring(reduceMotion), value: fraction)
                 }
                 .frame(width: 44, height: 44)
                 Text("\(Int(remaining))s")
-                    .font(.caption)
+                    .font(TetherType.meta)
                     .monospacedDigit()
+                    .contentTransition(.numericText())
                     .foregroundStyle(.secondary)
             }
             .onChange(of: remaining == 0) { _, expired in

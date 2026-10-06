@@ -175,7 +175,7 @@ public struct TerminalEngine: Sendable {
                 let name = entry.kind == .dir ? entry.name + "/" : entry.name
                 if !long { return name }
                 let kind = entry.kind == .dir ? "d" : (entry.kind == .link ? "l" : "-")
-                let size = entry.kind == .dir ? String(entry.childCount ?? 0) : formatBytes(entry.size)
+                let size = entry.kind == .dir && entry.size == 0 ? String(entry.childCount ?? 0) : formatBytes(entry.size)
                 return "\(kind)  \(size)\t\(formatDate(entry.modified))\t\(name)"
             }
             return TerminalResult(stdout: lines.joined(separator: "\n") + "\n", cwd: cwd.string)

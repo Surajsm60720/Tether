@@ -134,6 +134,7 @@ public final class MemoryFileProvider: FileProvider, @unchecked Sendable {
     public func abortUpload(id: String) async throws {
         withState {
             uploads.removeValue(forKey: id)
+            return ()
         }
     }
 
@@ -150,7 +151,7 @@ public final class MemoryFileProvider: FileProvider, @unchecked Sendable {
                 return FileEntry(
                     name: name,
                     kind: .dir,
-                    size: 0,
+                    size: node?.byteCount() ?? 0,
                     mtime: node?.mtime.timeIntervalSince1970 ?? Date().timeIntervalSince1970,
                     childCount: count
                 )
@@ -278,10 +279,19 @@ private indirect enum Node {
         }
     }
 
+    func byteCount() -> UInt64 {
+        switch self {
+        case let .file(data, _):
+            return UInt64(data.count)
+        case let .directory(children, _):
+            return children.values.reduce(0) { $0 + $1.byteCount() }
+        }
+    }
+
     func entry(named name: String) -> FileEntry {
         switch self {
         case let .directory(children, mtime):
-            return FileEntry(name: name, kind: .dir, size: 0, mtime: mtime.timeIntervalSince1970, childCount: children.count)
+            return FileEntry(name: name, kind: .dir, size: byteCount(), mtime: mtime.timeIntervalSince1970, childCount: children.count)
         case let .file(data, mtime):
             return FileEntry(name: name, kind: .file, size: UInt64(data.count), mtime: mtime.timeIntervalSince1970)
         }

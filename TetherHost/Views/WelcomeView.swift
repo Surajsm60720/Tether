@@ -7,13 +7,13 @@ struct WelcomeView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Image(systemName: "folder.badge.plus")
-                .font(.system(size: 40))
+                .font(TetherType.hero)
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(Color.tether.accentText)
             Text(L10n.welcomeTitle)
-                .font(.title2)
+                .font(TetherType.title)
             Text(L10n.welcomeBody)
-                .font(.body)
+                .font(TetherType.body)
                 .foregroundStyle(.secondary)
             HStack {
                 Spacer()
@@ -22,6 +22,8 @@ struct WelcomeView: View {
                     store.addFolder()
                     if !store.shares.isEmpty { dismiss() }
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(Color.tether.accent)
                 .keyboardShortcut(.defaultAction)
             }
         }

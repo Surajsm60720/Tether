@@ -33,6 +33,7 @@ final class ClientStore {
     var preview: FilePreview?
     var fileInfo: FileInfo?
     var pendingLarge: FileEntry?
+    var largeFileWillPreview: Bool { pendingPreview }
     var readOnlyAlert = false
     var terminalLines: [TermLine] = []
     var terminalCWD = "/"
@@ -45,8 +46,14 @@ final class ClientStore {
     var recents: [RecentRecord] = []
     var sessionTab = 0
     var connectingName: String?
+    var phoneVisible = false
     var searchText = ""
     var requestUpload = false
+    var selecting = false
+    var selection: Set<String> = []
+    var notice: String?
+    var feedbackCue: FeedbackCue = .success
+    var feedbackTick = 0
 
     private let context: ModelContext
     private let browser = TetherBrowser()
@@ -58,6 +65,9 @@ final class ClientStore {
     private var reconnectTask: Task<Void, Never>?
     private var intentionalDisconnect = false
     private var activeHost: PairedItem?
+    private var pendingPreview = true
+    private var pendingPath = "/"
+    private var thumbnailCache: [String: Data] = [:]
     private let deviceID: String
 
     init(context: ModelContext, preview: Bool = false) {
@@ -93,16 +103,20 @@ final class ClientStore {
         browser.onUpdate = { hosts in
             Task { @MainActor in
                 guard let store = ClientStore.shared else { return }
-                store.discovered = hosts
-                store.applyDiscoveredNames(hosts)
+                store.discovered = hosts.filter { host in
+                    !host.isPhone && host.hostId != store.deviceID
+                }
+                store.applyDiscoveredNames(store.discovered)
             }
         }
         browser.onState = { state in
             Task { @MainActor in
                 guard let store = ClientStore.shared else { return }
                 if state == "ready" {
+                    let shouldAdvertise = store.localNetworkOff || !store.phoneVisible
                     store.localNetworkOff = false
                     store.discoveryDetail = nil
+                    if shouldAdvertise { store.startPhoneListener() }
                 } else if state.hasPrefix("waiting") || state.hasPrefix("failed") {
                     store.localNetworkOff = true
                     store.discoveryDetail = "Allow Tether to find devices on your local network, then pull to refresh."
@@ -120,14 +134,31 @@ final class ClientStore {
                 await ClientStore.shared?.acceptDial(stream)
             }
         }
+        phoneListener.onState = { state in
+            Task { @MainActor in
+                guard let store = ClientStore.shared else { return }
+                if state == "ready" || state == "advertised" {
+                    store.phoneVisible = true
+                } else if state.hasPrefix("failed") {
+                    store.phoneVisible = false
+                }
+            }
+        }
         do {
+            // Same service type the Mac already publishes, on infrastructure Wi-Fi.
+            // A peer-to-peer-only advertisement can report ready and still be invisible
+            // to a Mac that is browsing the shared network.
             try phoneListener.start(
                 name: deviceName,
                 hostId: deviceID,
-                serviceType: TetherCoreInfo.phoneServiceType,
-                namePrefix: "Phone"
+                peerToPeer: false,
+                serviceType: TetherCoreInfo.serviceType,
+                namePrefix: "Phone",
+                role: "phone",
+                plainName: true
             )
         } catch {
+            phoneVisible = false
             TetherLog.discovery.debug("phone advertisement failed")
         }
     }
@@ -136,7 +167,7 @@ final class ClientStore {
         do {
             try await stream.start()
             let dial = try SessionDial.decode(try await FrameReader(stream: stream).nextPayload())
-            guard let keyData = try? KeychainStore.load(service: Self.service, account: "host.\(dial.hostId)") else {
+            guard let keyData = PairingSecrets.load(service: Self.service, account: "host.\(dial.hostId)") else {
                 await stream.close()
                 return
             }
@@ -208,7 +239,7 @@ final class ClientStore {
     }
 
     func forget(_ item: PairedItem) {
-        KeychainStore.delete(service: Self.service, account: "host.\(item.id)")
+        PairingSecrets.delete(service: Self.service, account: "host.\(item.id)")
         let records = (try? context.fetch(FetchDescriptor<PairedHostRecord>())) ?? []
         if let record = records.first(where: { $0.hostId == item.id }) {
             context.delete(record)
@@ -238,7 +269,7 @@ final class ClientStore {
             statusMessage = L10n.unreachable(item.name)
             return
         }
-        guard let keyData = try? KeychainStore.load(service: Self.service, account: "host.\(item.id)") else {
+        guard let keyData = PairingSecrets.load(service: Self.service, account: "host.\(item.id)") else {
             offline = true
             statusMessage = "This iPhone lost the saved pairing for \(item.name). Pair once more, then it will stay saved."
             return
@@ -308,7 +339,10 @@ final class ClientStore {
             let name = await session.hostName
             let id = await session.hostId
             guard let key else { throw ProtocolFailure.malformed }
-            try KeychainStore.save(service: Self.service, account: "host.\(id)", data: key)
+            PairingSecrets.save(service: Self.service, account: "host.\(id)", data: key)
+            guard PairingSecrets.load(service: Self.service, account: "host.\(id)") != nil else {
+                throw ProtocolFailure(code: .internalError, message: "Couldn't save the pairing on this iPhone.")
+            }
             savePaired(id: id, name: name)
             await session.setDisconnectHandler { [weak self] in
                 Task { @MainActor in self?.handleDisconnect() }
@@ -366,38 +400,154 @@ final class ClientStore {
     }
 
     func open(_ entry: FileEntry) async {
+        if selecting {
+            toggleSelection(entry)
+            return
+        }
         if entry.kind == .dir {
             path = path == "/" ? "/\(entry.name)" : path + "/" + entry.name
             entries = []
+            selection.removeAll()
             try? await refresh()
             return
         }
-        if entry.size > 100 * 1024 * 1024 {
-            pendingLarge = entry
-            return
-        }
         download(entry, preview: true)
+    }
+
+    func toggleSelection(_ entry: FileEntry) {
+        if selection.contains(entry.name) {
+            selection.remove(entry.name)
+        } else {
+            selection.insert(entry.name)
+        }
+    }
+
+    func downloadSelection() {
+        let chosen = entries.filter { selection.contains($0.name) }
+        selecting = false
+        selection.removeAll()
+        guard !chosen.isEmpty else { return }
+        Task { await self.transfer(chosen, preview: false, announce: true) }
     }
 
     func confirmLargeDownload() async {
         guard let entry = pendingLarge else { return }
+        let previewing = pendingPreview
+        let full = pendingPath == "/" ? "/\(entry.name)" : pendingPath + "/" + entry.name
         pendingLarge = nil
-        download(entry, preview: true)
-    }
-
-    func download(_ entry: FileEntry, preview: Bool) {
-        let full = joined(entry.name)
-        let destination = cacheURL(host: hostId, path: full, size: entry.size, mtime: entry.mtime, fileName: entry.name)
-        let item = TransferItem(name: entry.name, path: full, direction: .down, total: entry.size, localURL: destination)
-        transfers.insert(item, at: 0)
-        let id = item.id
-        transferTasks[id] = Task { @MainActor in
-            await self.performDownload(id: id, entry: entry, full: full, destination: destination, preview: preview)
-            self.transferTasks[id] = nil
+        let saved = await fetch(entry: entry, virtualPath: full, relativePath: entry.name, preview: previewing, allowLarge: true)
+        if saved {
+            if !previewing { notice = "Saved \(entry.name) to the Files app." }
+            cue(.success)
         }
     }
 
-    private func performDownload(id: UUID, entry: FileEntry, full: String, destination: URL, preview: Bool) async {
+    /// Preview opens Quick Look from the cache. Download copies the file into the Files app and does not open it.
+    func download(_ entry: FileEntry, preview: Bool) {
+        if entry.kind != .dir, entry.size > 100 * 1024 * 1024 {
+            pendingLarge = entry
+            pendingPreview = preview
+            pendingPath = path
+            return
+        }
+        Task { await self.transfer([entry], preview: preview, announce: !preview) }
+    }
+
+    private func transfer(_ items: [FileEntry], preview: Bool, announce: Bool) async {
+        var saved = 0
+        var finished = false
+        for entry in items {
+            if entry.kind == .dir {
+                let count = await walk(path: joined(entry.name), relative: entry.name)
+                if count > 0 {
+                    saved += count
+                    finished = true
+                }
+            } else if await fetch(entry: entry, virtualPath: joined(entry.name), relativePath: entry.name, preview: preview, allowLarge: true) {
+                finished = true
+                if !preview { saved += 1 }
+            }
+        }
+        if announce, saved > 0 {
+            notice = saved == 1 ? "Saved 1 item to the Files app." : "Saved \(saved) items to the Files app."
+        }
+        if finished { cue(.success) }
+    }
+
+    private func walk(path: String, relative: String) async -> Int {
+        let children = await listFolder(path)
+        if children.isEmpty {
+            let folder = documentsFile(relative: relative)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            return 1
+        }
+        var saved = 0
+        for child in children {
+            let childPath = path == "/" ? "/\(child.name)" : path + "/" + child.name
+            let childRelative = relative + "/" + child.name
+            if child.kind == .dir {
+                saved += await walk(path: childPath, relative: childRelative)
+            } else if await fetch(entry: child, virtualPath: childPath, relativePath: childRelative, preview: false, allowLarge: true) {
+                saved += 1
+            }
+        }
+        return saved
+    }
+
+    private func listFolder(_ path: String) async -> [FileEntry] {
+        if let demoFiles, let virtual = try? VirtualPath.parse(path) {
+            return (try? await demoFiles.list(path: virtual, offset: 0, limit: 1000, includeHidden: false)) ?? []
+        }
+        return (try? await connection?.list(path: path)) ?? []
+    }
+
+    @discardableResult
+    private func fetch(entry: FileEntry, virtualPath: String, relativePath: String, preview: Bool, allowLarge: Bool) async -> Bool {
+        if !allowLarge, entry.size > 100 * 1024 * 1024 {
+            pendingLarge = entry
+            pendingPreview = preview
+            pendingPath = path
+            return false
+        }
+        let destination = cacheURL(host: hostId, path: virtualPath, size: entry.size, mtime: entry.mtime, fileName: entry.name)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            if preview {
+                self.preview = FilePreview(url: destination, title: entry.name)
+                return true
+            }
+            do {
+                try copyToDocuments(from: destination, relative: relativePath)
+                return true
+            } catch {
+                return false
+            }
+        }
+        let item = TransferItem(name: entry.name, path: virtualPath, direction: .down, total: entry.size, localURL: destination)
+        transfers.insert(item, at: 0)
+        let id = item.id
+        let ok: Bool = await withCheckedContinuation { continuation in
+            let task = Task { @MainActor in
+                var result = await self.performDownload(id: id, entry: entry, full: virtualPath, destination: destination)
+                if result, preview {
+                    self.preview = FilePreview(url: destination, title: entry.name)
+                } else if result {
+                    do {
+                        try self.copyToDocuments(from: destination, relative: relativePath)
+                        self.updateTransfer(id, sent: max(entry.size, 1), total: max(entry.size, 1), state: .completed, message: "Saved to Files")
+                    } catch {
+                        self.updateTransfer(id, sent: entry.size, total: max(entry.size, 1), state: .failed, message: "Couldn't save that to the Files app.")
+                        result = false
+                    }
+                }
+                self.transferTasks[id] = nil
+                continuation.resume(returning: result)
+            }
+            self.transferTasks[id] = task
+        }
+        return ok
+    }
+
+    private func performDownload(id: UUID, entry: FileEntry, full: String, destination: URL) async -> Bool {
         do {
             try Task.checkCancellation()
             if let demoFiles {
@@ -413,22 +563,24 @@ final class ClientStore {
                 }
                 try Task.checkCancellation()
                 updateTransfer(id, sent: max(entry.size, 1), total: max(entry.size, 1), state: .completed)
+            } else {
+                updateTransfer(id, sent: 0, total: entry.size, state: .failed, message: "Not connected.")
+                return false
             }
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
             remember(full)
             refreshCacheSize()
             lastDownload = destination
-            if preview {
-                self.preview = FilePreview(url: destination, title: entry.name)
-            }
+            return true
         } catch is CancellationError {
             updateTransfer(id, sent: 0, total: entry.size, state: .failed, message: "Cancelled")
+            return false
         } catch {
             if Task.isCancelled {
                 updateTransfer(id, sent: 0, total: entry.size, state: .failed, message: "Cancelled")
             } else {
                 updateTransfer(id, sent: 0, total: entry.size, state: .failed, message: (error as? ProtocolFailure)?.message)
             }
+            return false
         }
     }
 
@@ -498,7 +650,20 @@ final class ClientStore {
     }
 
     func showInfo(_ entry: FileEntry) {
-        fileInfo = FileInfo(entry: entry, path: joined(entry.name))
+        let full = joined(entry.name)
+        let canWrite = shareAllowsUploads(full)
+        fileInfo = FileInfo(entry: entry, path: full, writable: canWrite)
+        Task {
+            let detailed: FileEntry?
+            if let demoFiles, let virtual = try? VirtualPath.parse(full) {
+                detailed = try? await demoFiles.stat(path: virtual)
+            } else {
+                detailed = try? await connection?.stat(path: full)
+            }
+            if let detailed, self.fileInfo?.path == full {
+                self.fileInfo = FileInfo(entry: detailed, path: full, writable: canWrite)
+            }
+        }
     }
 
     func clearCompleted() {
@@ -518,11 +683,13 @@ final class ClientStore {
         guard path != "/" else { return }
         let virtual = (try? VirtualPath.parse(path)) ?? .root
         path = virtual.parent.string
+        selection.removeAll()
         try? await refresh()
     }
 
     func go(to ancestor: String) async {
         path = ancestor
+        selection.removeAll()
         try? await refresh()
     }
 
@@ -557,8 +724,11 @@ final class ClientStore {
     }
 
     var currentShareWritable: Bool {
-        if path == "/" { return false }
-        let share = (try? VirtualPath.parse(path))?.components.first
+        shareAllowsUploads(path)
+    }
+
+    private func shareAllowsUploads(_ fullPath: String) -> Bool {
+        guard let share = (try? VirtualPath.parse(fullPath))?.components.first else { return false }
         return shares.first { $0.name == share }?.writable ?? false
     }
 
@@ -597,12 +767,21 @@ final class ClientStore {
     }
 
     func thumbnail(for entry: FileEntry) async -> Data? {
+        guard entry.kind != .dir else { return nil }
         let full = joined(entry.name)
+        if let cached = thumbnailCache[full] { return cached }
+        let data: Data?
         if let demoFiles {
             guard entry.name.lowercased().hasSuffix("jpg") || entry.name.lowercased().hasSuffix("jpeg") else { return nil }
-            return try? await demoFiles.read(path: VirtualPath.parse(full), offset: 0, length: 256 * 1024).data
+            data = try? await demoFiles.read(path: VirtualPath.parse(full), offset: 0, length: 256 * 1024).data
+        } else {
+            data = try? await connection?.thumbnail(path: full, maxPixel: 200)
         }
-        return try? await connection?.thumbnail(path: full, maxPixel: 200)
+        if let data, !data.isEmpty {
+            if thumbnailCache.count > 100 { thumbnailCache.removeAll() }
+            thumbnailCache[full] = data
+        }
+        return data
     }
 
     func clearCache() {
@@ -621,6 +800,21 @@ final class ClientStore {
         }
         try FileManager.default.copyItem(at: url, to: destination)
         return destination
+    }
+
+    private func copyToDocuments(from url: URL, relative: String) throws {
+        let destination = documentsFile(relative: relative)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.copyItem(at: url, to: destination)
+    }
+
+    private func documentsFile(relative: String) -> URL {
+        relative.split(separator: "/").reduce(documentsDirectory) { partial, part in
+            partial.appendingPathComponent(String(part))
+        }
     }
 
     func sceneBecameActive() {
@@ -664,13 +858,18 @@ final class ClientStore {
         Task { try? await refresh() }
     }
 
+    private func cue(_ kind: FeedbackCue) {
+        feedbackCue = kind
+        feedbackTick += 1
+    }
+
     private func handleDisconnect() {
         connection = nil
         guard connected, !intentionalDisconnect else { return }
         offline = true
         reconnecting = true
         statusMessage = "Reconnecting to \(hostName)…"
-        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        cue(.warning)
         scheduleReconnect()
     }
 
@@ -766,9 +965,17 @@ final class ClientStore {
             }
             let previous = self.path
             self.path = virtual.parent.string
-            await download(FileEntry(name: name, kind: entry.kind, size: entry.size, mtime: entry.mtime), preview: action.type != "get")
-            if action.type == "get", let lastDownload {
-                _ = try? saveToDocuments(lastDownload)
+            let previewing = action.type != "get"
+            let saved = await fetch(
+                entry: FileEntry(name: name, kind: entry.kind, size: entry.size, mtime: entry.mtime, uti: entry.uti, childCount: entry.childCount, created: entry.created),
+                virtualPath: path,
+                relativePath: name,
+                preview: previewing,
+                allowLarge: entry.size <= 100 * 1024 * 1024
+            )
+            if saved {
+                if !previewing { notice = "Saved \(name) to the Files app." }
+                cue(.success)
             }
             self.path = previous
         case "put":
@@ -787,6 +994,7 @@ final class ClientStore {
 
     private func applyDiscoveredNames(_ hosts: [DiscoveredHost]) {
         for host in hosts {
+            guard host.hasFriendlyName else { continue }
             guard let match = paired.first(where: { host.matches(savedHostId: $0.id) }), match.name != host.name else { continue }
             renamePaired(id: match.id, name: host.name)
         }
@@ -884,18 +1092,18 @@ final class ClientStore {
 
     private static func loadDeviceID() -> String {
         let defaultsKey = "tether.deviceId"
-        if let data = try? KeychainStore.load(service: service, account: "device-id"),
+        if let saved = UserDefaults.standard.string(forKey: defaultsKey), !saved.isEmpty {
+            PairingSecrets.save(service: service, account: "device-id", data: Data(saved.utf8))
+            return saved
+        }
+        if let data = PairingSecrets.load(service: service, account: "device-id"),
            let text = String(data: data, encoding: .utf8), !text.isEmpty {
             UserDefaults.standard.set(text, forKey: defaultsKey)
             return text
         }
-        if let saved = UserDefaults.standard.string(forKey: defaultsKey), !saved.isEmpty {
-            try? KeychainStore.save(service: service, account: "device-id", data: Data(saved.utf8))
-            return saved
-        }
         let id = UUID().uuidString
         UserDefaults.standard.set(id, forKey: defaultsKey)
-        try? KeychainStore.save(service: service, account: "device-id", data: Data(id.utf8))
+        PairingSecrets.save(service: service, account: "device-id", data: Data(id.utf8))
         return id
     }
 }

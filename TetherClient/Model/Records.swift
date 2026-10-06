@@ -84,6 +84,7 @@ struct FilePreview: Identifiable, Equatable {
 struct FileInfo: Identifiable, Equatable {
     var entry: FileEntry
     var path: String
+    var writable: Bool
     var id: String { path }
 }
 
@@ -93,6 +94,12 @@ struct TermLine: Identifiable, Equatable {
     var kind: Kind
 
     enum Kind { case input, output, error, dim, directory }
+}
+
+enum FeedbackCue: Equatable {
+    case success
+    case warning
+    case selection
 }
 
 enum FileSort: String, CaseIterable, Identifiable {

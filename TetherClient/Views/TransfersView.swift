@@ -3,6 +3,7 @@ import SwiftUI
 struct TransfersView: View {
     @Bindable var store: ClientStore
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection = Set<UUID>()
 
     var body: some View {
@@ -38,6 +39,7 @@ struct TransfersView: View {
                     ContentUnavailableView("No transfers", systemImage: "arrow.up.arrow.down")
                 }
             }
+            .animation(TetherMotion.spring(reduceMotion), value: store.transfers.count)
             .navigationTitle(L10n.transfers)
             .toolbar {
                 EditButton()
@@ -92,7 +94,7 @@ struct TransferRow: View {
 
     private var detail: String {
         if item.state == .failed { return item.message ?? "Failed · Retry" }
-        if item.state == .completed { return "Done" }
+        if item.state == .completed { return item.message ?? "Done" }
         let rate = Format.speed(bytes: item.sent, since: item.started)
         let eta = Format.eta(sent: item.sent, total: item.total, since: item.started)
         return eta.isEmpty ? rate : "\(rate) · \(eta)"

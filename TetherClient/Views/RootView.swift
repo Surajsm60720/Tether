@@ -5,6 +5,7 @@ import UIKit
 struct RootView: View {
     @Bindable var store: ClientStore
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -16,6 +17,9 @@ struct RootView: View {
                 HostsView(store: store)
             }
         }
+        .animation(TetherMotion.spring(reduceMotion), value: store.connected)
+        .animation(TetherMotion.spring(reduceMotion), value: store.revoked)
+        .sensoryFeedback(sensory, trigger: store.feedbackTick)
         .fullScreenCover(isPresented: $store.showPrimer) {
             PrimerView(store: store)
         }
@@ -46,6 +50,14 @@ struct RootView: View {
         }
         .padding(24)
     }
+
+    private var sensory: SensoryFeedback {
+        switch store.feedbackCue {
+        case .success: .success
+        case .warning: .warning
+        case .selection: .selection
+        }
+    }
 }
 
 struct PrimerView: View {
@@ -55,13 +67,13 @@ struct PrimerView: View {
         VStack(spacing: 24) {
             Spacer()
             Image(systemName: "wifi")
-                .font(.system(size: 56))
+                .font(TetherType.hero)
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(Color.tether.accentText)
             Text(L10n.primerTitle)
-                .font(.title2)
+                .font(TetherType.title)
             Text(L10n.primerBody)
-                .font(.body)
+                .font(TetherType.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Spacer()
@@ -77,6 +89,7 @@ struct PrimerView: View {
 
 struct HostsView: View {
     @Bindable var store: ClientStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         NavigationStack {
@@ -102,7 +115,6 @@ struct HostsView: View {
                 }
             }
             .refreshable {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 store.refreshBrowser()
             }
         }
@@ -172,7 +184,9 @@ struct HostsView: View {
                     .foregroundStyle(.secondary)
             }
             Section {
-                Text("This iPhone shows up on your Mac as \(store.deviceName). Change it in Settings.")
+                Text(store.phoneVisible
+                    ? "This iPhone shows up on your Mac as \(store.deviceName). Change it in Settings."
+                    : "Your Mac lists this iPhone as \(store.deviceName) while Tether is open. If it is missing, pull to refresh.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -188,9 +202,10 @@ struct HostsView: View {
                 Button(L10n.openSettings) { store.openSettings() }
             } else {
                 Image(systemName: "laptopcomputer")
-                    .font(.system(size: 48))
+                    .font(TetherType.hero)
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(Color.tether.accentText)
+                    .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
                     .overlay(alignment: .bottomTrailing) {
                         Image(systemName: "iphone")
                             .font(.title2)
@@ -241,6 +256,7 @@ struct StatusDot: View {
 struct PairView: View {
     @Bindable var store: ClientStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var manual = false
     @State private var code = ""
     @State private var chosenID: String?
@@ -251,25 +267,27 @@ struct PairView: View {
                 switch store.pairPhase {
                 case .connecting:
                     ProgressView()
-                    Text(L10n.connecting).font(.headline)
+                    Text(L10n.connecting).font(TetherType.section)
                 case .waiting:
                     Image(systemName: "dot.radiowaves.left.and.right")
-                        .font(.largeTitle)
+                        .font(TetherType.hero)
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(Color.tether.warning)
+                        .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
                     Text(L10n.pairWaiting)
-                        .font(.headline)
+                        .font(TetherType.section)
                         .multilineTextAlignment(.center)
                     Button("Cancel") { dismiss() }
                 case let .success(name):
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 64))
+                        .font(TetherType.hero)
                         .foregroundStyle(Color.tether.success)
+                        .symbolEffect(.bounce, value: name)
                     Text(L10n.pairSuccess(name))
-                        .font(.title2)
+                        .font(TetherType.title)
                 case let .failed(message):
                     Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
+                        .font(TetherType.hero)
                         .foregroundStyle(Color.tether.danger)
                     Text(message)
                         .font(.body)
@@ -280,6 +298,7 @@ struct PairView: View {
                 }
             }
             .padding(16)
+            .animation(TetherMotion.spring(reduceMotion), value: phaseToken)
             .navigationTitle("Pair")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -293,6 +312,16 @@ struct PairView: View {
             store.refreshBrowser()
         }
         .sensoryFeedback(.success, trigger: successName)
+    }
+
+    private var phaseToken: String {
+        switch store.pairPhase {
+        case .scanning: "scanning"
+        case .connecting: "connecting"
+        case .waiting: "waiting"
+        case .success: "success"
+        case .failed: "failed"
+        }
     }
 
     private var successName: String {
@@ -341,7 +370,7 @@ struct PairView: View {
             TextField("XXXX-XXXX-XXXX-XXXX", text: $code)
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
-                .font(.system(.title3, design: .monospaced))
+                .font(TetherType.code)
                 .multilineTextAlignment(.center)
                 .onChange(of: code) { _, newValue in
                     code = formatCode(newValue)

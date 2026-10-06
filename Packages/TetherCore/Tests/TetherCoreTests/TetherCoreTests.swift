@@ -10,10 +10,83 @@ import Testing
     #expect(!BonjourHostID.matches(discoveredId: "other", serviceName: "Tether-other", savedId: "abcd1234"))
 }
 
+@Test func bonjourInstanceNameCarriesDisplayName() {
+    let name = BonjourHostID.instanceName(displayName: "Cedar Studio", id: "abcd1234", fallbackPrefix: "Tether")
+    #expect(name.contains("Cedar Studio"))
+    #expect(BonjourHostID.resolve(serviceName: name, txtId: nil) == "abcd1234")
+    #expect(BonjourHostID.displayName(serviceName: name, txtName: nil) == "Cedar Studio")
+    #expect(BonjourHostID.displayName(serviceName: name, txtName: "Harbor Loft") == "Harbor Loft")
+    #expect(BonjourHostID.matches(discoveredId: "abcd1234", serviceName: name, savedId: "abcd1234"))
+    let fitted = BonjourHostID.instanceName(displayName: String(repeating: "A", count: 80), id: "abcd1234", fallbackPrefix: "Tether")
+    #expect(fitted.utf8.count <= 63)
+    #expect(BonjourHostID.resolve(serviceName: fitted, txtId: nil) == "abcd1234")
+    #expect(!BonjourHostID.displayName(serviceName: "Tether-abcd1234", txtName: nil).isEmpty)
+}
+
+@Test func directorySizeIncludesNestedFiles() async throws {
+    let files = MemoryFileProvider()
+    files.addShare(name: "Docs", writable: true)
+    try files.writeFile(path: "/Docs/hello.txt", data: Data("hello".utf8))
+    try files.writeFile(path: "/Docs/sub/note.txt", data: Data("abcd".utf8))
+    let listed = try await files.list(path: .root, offset: 0, limit: 10, includeHidden: false)
+    let docs = try #require(listed.first { $0.name == "Docs" })
+    #expect(docs.size == 9)
+    #expect(docs.childCount == 2)
+    let inside = try await files.list(path: VirtualPath.parse("/Docs"), offset: 0, limit: 10, includeHidden: false)
+    #expect(inside.first { $0.name == "sub" }?.size == 4)
+    #expect(inside.first { $0.name == "hello.txt" }?.size == 5)
+}
+
+@Test func diskFolderAndFileSizes() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("tether-size-\(UUID().uuidString)", isDirectory: true)
+    let share = root.appendingPathComponent("share", isDirectory: true)
+    let folder = share.appendingPathComponent("Folder", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try Data("abcdef".utf8).write(to: folder.appendingPathComponent("a.txt"))
+    try Data("xy".utf8).write(to: share.appendingPathComponent("b.bin"))
+    let package = share.appendingPathComponent("Doc.pages", isDirectory: true)
+    try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+    try Data("12345".utf8).write(to: package.appendingPathComponent("index"))
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let provider = DiskFileProvider(shares: [MountedShare(name: "share", root: share, writable: true)])
+    let listed = try await provider.list(path: VirtualPath.parse("/share"), offset: 0, limit: 20, includeHidden: false)
+    let folderEntry = try #require(listed.first { $0.name == "Folder" })
+    #expect(folderEntry.kind == .dir)
+    #expect(folderEntry.childCount == 1)
+    #expect(folderEntry.size == 6)
+    let file = try #require(listed.first { $0.name == "b.bin" })
+    #expect(file.size == 2)
+    let pages = try #require(listed.first { $0.name == "Doc.pages" })
+    #expect(pages.size == 5)
+    let info = try await provider.stat(path: VirtualPath.parse("/share/Folder"))
+    #expect(info.size == 6)
+    #expect(info.childCount == 1)
+    #expect(info.created != nil)
+}
+
 @Test func phoneServiceNameResolvesDeviceId() {
     let id = "11111111-2222-3333-4444-555555555555"
     #expect(BonjourHostID.resolve(serviceName: "Phone-\(id)", txtId: nil) == id)
     #expect(BonjourHostID.matches(discoveredId: id, serviceName: "Phone-\(id)", savedId: id))
+    #expect(BonjourHostID.displayName(serviceName: "Phone-\(id)", txtName: "Suraj iPhone") == "Suraj iPhone")
+    #expect(BonjourHostID.displayName(serviceName: "Phone-\(id)", txtName: nil) == "iPhone")
+    let phone = DiscoveredHost(
+        name: "iPhone",
+        hostId: id,
+        endpoint: .hostPort(host: .ipv4(.loopback), port: 9),
+        serviceName: "Phone-\(id)",
+        role: "phone"
+    )
+    #expect(phone.isPhone)
+    let mac = DiscoveredHost(
+        name: "Cedar Studio",
+        hostId: "abcd1234",
+        endpoint: .hostPort(host: .ipv4(.loopback), port: 9),
+        serviceName: "Cedar Studio #abcd1234",
+        role: "mac"
+    )
+    #expect(!mac.isPhone)
 }
 
 @Test func dialFrameRoundTrip() throws {

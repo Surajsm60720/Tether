@@ -29,6 +29,8 @@ enum HostPage: String, CaseIterable, Identifiable {
 
 struct HostWindow: View {
     @Bindable var store: HostStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @State private var page: HostPage? = .overview
     @State private var showPairing = false
     @State private var pendingRevoke: DeviceItem?
@@ -39,12 +41,18 @@ struct HostWindow: View {
         NavigationSplitView {
             List(HostPage.allCases, selection: $page) { item in
                 Label(item.title, systemImage: item.symbol)
+                    .symbolRenderingMode(.hierarchical)
                     .tag(item)
             }
+            .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 196, ideal: 220)
+            .safeAreaInset(edge: .bottom) {
+                sidebarStatus
+            }
         } detail: {
             NavigationStack {
                 detail
+                    .animation(TetherMotion.fade(reduceMotion), value: page)
                     .navigationTitle(page?.title ?? "Tether")
                     .toolbar {
                         ToolbarItem(placement: .primaryAction) {
@@ -57,6 +65,9 @@ struct HostWindow: View {
             }
         }
         .frame(minWidth: 860, minHeight: 540)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { store.refreshPhones(announce: false) }
+        }
         .sheet(isPresented: $showPairing) {
             PairingWindow(store: store)
         }
@@ -90,8 +101,45 @@ struct HostWindow: View {
         }
     }
 
+    private var sidebarStatus: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(store.sharingEnabled ? (store.connected.isEmpty ? Color.tether.warning : Color.tether.success) : Color.secondary)
+                .frame(width: 8, height: 8)
+            Text(store.sharingEnabled ? (store.connected.isEmpty ? "Waiting" : "Connected") : "Paused")
+                .font(TetherType.meta)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
+    }
+
     private var overview: some View {
         Form {
+            Section {
+                HStack(alignment: .center, spacing: 16) {
+                    Image(systemName: store.sharingEnabled ? "laptopcomputer" : "pause.circle")
+                        .font(TetherType.hero)
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(store.sharingEnabled ? Color.tether.accentText : Color.secondary)
+                        .symbolEffect(.bounce, value: store.connected.count)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(store.macName)
+                            .font(TetherType.title)
+                        Label(store.statusText, systemImage: store.connected.isEmpty ? "circle" : "checkmark.circle.fill")
+                            .font(TetherType.secondary)
+                            .foregroundStyle(.secondary)
+                            .symbolRenderingMode(.hierarchical)
+                        Text(store.networkLine)
+                            .font(TetherType.meta)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 4)
+            }
             Section {
                 TextField("Name on iPhone", text: $nameDraft)
                     .onSubmit { store.setName(nameDraft) }
@@ -205,15 +253,22 @@ struct HostWindow: View {
         List {
             Section {
                 if store.nearbyPhones.isEmpty {
-                    Text("Open Tether on the iPhone. It will show up here while the app is open.")
+                    Text("Open Tether on the iPhone. It will show up here, under the name set on the iPhone, while that app is open.")
                         .foregroundStyle(.secondary)
                 }
+                Button("Look again") { store.refreshPhones() }
                 ForEach(store.nearbyPhones) { phone in
-                    HStack {
+                    HStack(spacing: 12) {
+                        Image(systemName: "iphone")
+                            .font(TetherType.title)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(Color.tether.accentText)
+                            .frame(width: 36)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(phone.name)
+                                .font(TetherType.body)
                             Text(store.devices.contains { phone.matches(savedHostId: $0.id) } ? "Paired" : "Not paired yet")
-                                .font(.caption)
+                                .font(TetherType.meta)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()

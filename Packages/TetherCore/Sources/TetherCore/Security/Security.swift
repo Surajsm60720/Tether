@@ -297,33 +297,32 @@ public struct PairingPayload: Sendable {
 /// On the Mac they live in the data protection keychain, so opening the app does not ask for the login keychain password.
 public enum KeychainStore {
     public static func save(service: String, account: String, data: Data) throws {
-        let query = baseQuery(service: service, account: account)
-        SecItemDelete(query as CFDictionary)
-        var add = query
-        add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(add as CFDictionary, nil)
-        guard status == errSecSuccess else {
+        var saved = false
+        for query in queries(service: service, account: account) {
+            SecItemDelete(query as CFDictionary)
+            var add = query
+            add[kSecValueData as String] = data
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            if SecItemAdd(add as CFDictionary, nil) == errSecSuccess {
+                saved = true
+            }
+        }
+        guard saved else {
             throw ProtocolFailure(code: .internalError, message: "Couldn't save the pairing key on this device.")
         }
     }
 
     public static func load(service: String, account: String) throws -> Data? {
-        if let data = read(baseQuery(service: service, account: account)) {
-            return data
-        }
-        let older = legacyQuery(service: service, account: account)
-        if let data = read(older) {
-            try? save(service: service, account: account, data: data)
-            SecItemDelete(older as CFDictionary)
-            return data
+        for query in queries(service: service, account: account) {
+            if let data = read(query), !data.isEmpty { return data }
         }
         return nil
     }
 
     public static func delete(service: String, account: String) {
-        SecItemDelete(baseQuery(service: service, account: account) as CFDictionary)
-        SecItemDelete(legacyQuery(service: service, account: account) as CFDictionary)
+        for query in queries(service: service, account: account) {
+            SecItemDelete(query as CFDictionary)
+        }
     }
 
     private static func read(_ query: [String: Any]) -> Data? {
@@ -336,26 +335,68 @@ public enum KeychainStore {
         return data
     }
 
-    /// Items saved before the data-protection keychain change, or without the synchronizable flag.
-    private static func legacyQuery(service: String, account: String) -> [String: Any] {
-        [
+    /// The data-protection keychain and the login keychain do not see each other's items.
+    /// Searching both keeps a pairing alive after the app is quit and opened again.
+    private static func queries(service: String, account: String) -> [[String: Any]] {
+        let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
+        var all = [base]
+        #if os(macOS)
+        var protected = base
+        protected[kSecUseDataProtectionKeychain as String] = true
+        all.insert(protected, at: 0)
+        #endif
+        return all
+    }
+}
+
+/// Pairing secrets. The keychain is preferred. A file inside the app's container is the
+/// backup so quitting both apps cannot forget a device the user never revoked.
+public enum PairingSecrets {
+    public static func save(service: String, account: String, data: Data) {
+        try? KeychainStore.save(service: service, account: account, data: data)
+        write(service: service, account: account, data: data)
     }
 
-    private static func baseQuery(service: String, account: String) -> [String: Any] {
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrSynchronizable as String: false,
-        ]
-        #if os(macOS)
-        query[kSecUseDataProtectionKeychain as String] = true
-        #endif
-        return query
+    public static func load(service: String, account: String) -> Data? {
+        if let data = try? KeychainStore.load(service: service, account: account), !data.isEmpty {
+            write(service: service, account: account, data: data)
+            return data
+        }
+        if let data = read(service: service, account: account), !data.isEmpty {
+            try? KeychainStore.save(service: service, account: account, data: data)
+            return data
+        }
+        return nil
+    }
+
+    public static func delete(service: String, account: String) {
+        KeychainStore.delete(service: service, account: account)
+        try? FileManager.default.removeItem(at: fileURL(service: service, account: account))
+    }
+
+    private static func write(service: String, account: String, data: Data) {
+        let url = fileURL(service: service, account: account)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private static func read(service: String, account: String) -> Data? {
+        try? Data(contentsOf: fileURL(service: service, account: account))
+    }
+
+    private static func fileURL(service: String, account: String) -> URL {
+        let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Tether/secrets", isDirectory: true)
+        let name = "\(service).\(account)".map { character -> Character in
+            if character.isLetter || character.isNumber || character == "-" || character == "." { return character }
+            return "_"
+        }
+        return folder.appendingPathComponent(String(name))
     }
 }
 
