@@ -16,6 +16,8 @@ public struct VTCell: Equatable, Sendable {
     public var underline: Bool
     public var inverse: Bool
     public var hidden: Bool
+    /// Non-zero when this cell belongs to an OSC 8 hyperlink. The screen owns the address.
+    public var linkID: UInt32
 
     public static let blank = VTCell(
         grapheme: " ",
@@ -26,7 +28,8 @@ public struct VTCell: Equatable, Sendable {
         dim: false,
         underline: false,
         inverse: false,
-        hidden: false
+        hidden: false,
+        linkID: 0
     )
 }
 
@@ -129,11 +132,16 @@ public struct VTScreen: Equatable, Sendable {
     private var primary: [VTCell]?
     private var primaryCursor: SavedPlace?
     private var alternate: Bool
+    private var links: [UInt32: String]
+    private var idsByLink: [String: UInt32]
+    private var nextLinkID: UInt32
+    private var activeLinkID: UInt32
 
     private struct SavedCursor: Equatable {
         var row: Int
         var column: Int
         var pen: VTCell
+        var linkID: UInt32
     }
 
     private struct SavedPlace: Equatable {
@@ -177,6 +185,27 @@ public struct VTScreen: Equatable, Sendable {
         primary = nil
         primaryCursor = nil
         alternate = false
+        links = [:]
+        idsByLink = [:]
+        nextLinkID = 1
+        activeLinkID = 0
+    }
+
+    /// Address under a cell when Control-click should open it on this device.
+    /// OSC 8 hyperlinks win. Plain http and https text is recognized otherwise.
+    /// Anything that is not a web address returns nil so it stays on the Mac.
+    public func linkTarget(line: Int, column: Int) -> String? {
+        guard column >= 0, line >= 0, line < lineCount else { return nil }
+        return withLine(line) { slice in
+            let cells = Array(slice)
+            guard column < cells.count else { return nil }
+            var probe = column
+            if cells[probe].width == 0, probe > 0 { probe -= 1 }
+            if cells[probe].linkID != 0, let raw = links[cells[probe].linkID] {
+                return VTBrowserLink.webAddress(raw)
+            }
+            return VTBrowserLink.plainAddress(in: cells, column: column)
+        }
     }
 
     public var drawCursor: (row: Int, column: Int) {
@@ -348,7 +377,7 @@ public struct VTScreen: Equatable, Sendable {
             osc.removeAll(keepingCapacity: true)
             state = .osc
         case 0x37:
-            savedCursor = SavedCursor(row: cursorRow, column: cursorColumn, pen: pen)
+            savedCursor = SavedCursor(row: cursorRow, column: cursorColumn, pen: pen, linkID: activeLinkID)
         case 0x38:
             restoreCursor()
         case 0x44:
@@ -452,7 +481,7 @@ public struct VTScreen: Equatable, Sendable {
         case 0x72:
             setScrollRegion(values)
         case 0x73:
-            savedCursor = SavedCursor(row: cursorRow, column: cursorColumn, pen: pen)
+            savedCursor = SavedCursor(row: cursorRow, column: cursorColumn, pen: pen, linkID: activeLinkID)
         case 0x75:
             restoreCursor()
         case 0x63:
@@ -852,6 +881,7 @@ public struct VTScreen: Equatable, Sendable {
         var cell = pen
         cell.grapheme = grapheme
         cell.width = width
+        cell.linkID = activeLinkID
         let index = row * columns + column
         var changed = cells[index] != cell
         cells[index] = cell
@@ -859,6 +889,7 @@ public struct VTScreen: Equatable, Sendable {
             var spacer = VTCell.blank
             spacer.grapheme = ""
             spacer.width = 0
+            spacer.linkID = activeLinkID
             if cells[index + 1] != spacer { changed = true }
             cells[index + 1] = spacer
         }
@@ -949,9 +980,34 @@ public struct VTScreen: Equatable, Sendable {
     private mutating func finishOSC() {
         let text = String(decoding: osc, as: UTF8.self)
         osc.removeAll(keepingCapacity: true)
-        let parts = text.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
-        guard let code = parts.first, code == "0" || code == "2" else { return }
-        title = parts.count > 1 ? String(parts[1]) : ""
+        let parts = text.split(separator: ";", maxSplits: 2, omittingEmptySubsequences: false)
+        guard let code = parts.first else { return }
+        if code == "0" || code == "2" {
+            let titleParts = text.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+            title = titleParts.count > 1 ? String(titleParts[1]) : ""
+            return
+        }
+        guard code == "8" else { return }
+        let uri = parts.count > 2 ? String(parts[2]) : ""
+        setActiveLink(uri)
+    }
+
+    private mutating func setActiveLink(_ uri: String) {
+        let trimmed = uri.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            activeLinkID = 0
+            return
+        }
+        if let existing = idsByLink[trimmed] {
+            activeLinkID = existing
+            return
+        }
+        let id = nextLinkID
+        nextLinkID &+= 1
+        if nextLinkID == 0 { nextLinkID = 1 }
+        links[id] = trimmed
+        idsByLink[trimmed] = id
+        activeLinkID = id
     }
 
     private mutating func restoreCursor() {
@@ -959,6 +1015,7 @@ public struct VTScreen: Equatable, Sendable {
         cursorRow = min(saved.row, rows - 1)
         cursorColumn = min(saved.column, columns)
         pen = saved.pen
+        activeLinkID = saved.linkID
         wrapPending = false
     }
 
@@ -1012,5 +1069,68 @@ public struct VTScreen: Equatable, Sendable {
             if text[previous] == " " { end = previous } else { break }
         }
         return String(text[..<end])
+    }
+}
+
+enum VTBrowserLink {
+    private static let trailing = CharacterSet(charactersIn: ".,;:!?)]}'\">")
+
+    /// http and https addresses only. File and other schemes stay on the Mac.
+    static func webAddress(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host, !host.isEmpty else { return nil }
+        return trimmed
+    }
+
+    static func plainAddress(in cells: [VTCell], column: Int) -> String? {
+        var characters: [Character] = []
+        var columns: [Int] = []
+        var cursor = 0
+        characters.reserveCapacity(cells.count)
+        for cell in cells {
+            if cell.width == 0 { continue }
+            let glyph = cell.grapheme.isEmpty ? " " : cell.grapheme
+            for character in glyph {
+                characters.append(character)
+                columns.append(cursor)
+            }
+            cursor += max(cell.width, 1)
+        }
+        let text = String(characters)
+        var index = text.startIndex
+        while index < text.endIndex {
+            let rest = text[index...]
+            let schemeCount: Int
+            if rest.prefix(8).lowercased() == "https://" {
+                schemeCount = 8
+            } else if rest.prefix(7).lowercased() == "http://" {
+                schemeCount = 7
+            } else {
+                index = text.index(after: index)
+                continue
+            }
+            var end = text.index(index, offsetBy: schemeCount)
+            while end < text.endIndex, !text[end].isWhitespace, !"<>\"'`".contains(text[end]) {
+                end = text.index(after: end)
+            }
+            var address = String(text[index..<end])
+            while let last = address.unicodeScalars.last, trailing.contains(last) {
+                address.removeLast()
+            }
+            let startOffset = text.distance(from: text.startIndex, to: index)
+            let endOffset = startOffset + address.count
+            if startOffset < columns.count, endOffset > startOffset, endOffset <= columns.count {
+                let firstColumn = columns[startOffset]
+                let lastColumn = columns[endOffset - 1]
+                if column >= firstColumn, column <= lastColumn, let accepted = webAddress(address) {
+                    return accepted
+                }
+            }
+            index = end
+        }
+        return nil
     }
 }

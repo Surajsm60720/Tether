@@ -283,16 +283,19 @@ import Testing
 }
 
 @Test func v1E2E_changelogListsEveryShippedVersion() throws {
-    #expect(AppChangelog.current == "2.0")
+    #expect(AppChangelog.current == "2.1")
     let versions = Set(AppChangelog.releases.map(\.version))
     #expect(versions.contains("1.0"))
     #expect(versions.contains("1.1"))
     #expect(versions.contains("1.2"))
     #expect(versions.contains("2.0"))
+    #expect(versions.contains("2.1"))
     let v1 = try #require(AppChangelog.releases.first { $0.version == "1.0" })
     #expect(v1.items.count >= 8)
     let v2 = try #require(AppChangelog.releases.first { $0.version == "2.0" })
     #expect(v2.items.contains(where: { $0.localizedCaseInsensitiveContains("agent") }))
+    let v21 = try #require(AppChangelog.releases.first { $0.version == "2.1" })
+    #expect(v21.items.contains(where: { $0.localizedCaseInsensitiveContains("keyboard") }))
 }
 
 @Test func v1E2E_terminalCommandSurfaceMatchesHelp() async {

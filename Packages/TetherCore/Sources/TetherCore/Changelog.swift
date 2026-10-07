@@ -14,9 +14,17 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "2.0"
+    public static let current = "2.1"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "2.1", items: [
+            "Leave a live agent for Files or Transfers without ending it; Terminal shows a Live badge until you close with X.",
+            "While the agent fills the Terminal tab, the tab bar hides so the PTY and key row use the full bottom edge.",
+            "Opening the software keyboard no longer shrinks the remote screen, so Claude Code, Codex, and Cursor permission menus stay visible.",
+            "Accessory keys: show or hide the keyboard; live agents also get S-Tab, Y, and N for those prompts.",
+            "Control-tap an http or https link (OSC 8 or plain text) to open it in the phone browser; a plain tap focuses the keyboard.",
+            "Snappier paint when the agent is idle so follow-ups and permission menus appear on the next frame.",
+        ]),
         ReleaseNotes(version: "2.0", items: [
             "Run allowlisted coding agents from the phone: Claude Code, Cursor Agent, Codex, and related CLIs.",
             "A live pseudo-terminal on the Mac drives the agent; the phone is the screen and keyboard.",

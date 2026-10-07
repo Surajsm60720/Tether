@@ -126,8 +126,9 @@ Rules:
 
 ### 6.8 Terminal tab
 - Full-bleed dark terminal (`term.bg`) regardless of system appearance, status bar style adapted.
-- Top strip (thin): host name with connection dot, current directory, a close button (exit).
-- Accessory key row above the keyboard: `Tab` `Esc` `Ctrl` `↑` `↓` `/` `~` `-` `|`, each a 44 pt-tall key with `term.dim` outline.
+- Top strip (thin): host name with connection dot, current directory; during a live agent session also a Files control (leaves Terminal without ending the session), copy, and a close button (ends the session). Otherwise close returns to Files.
+- While a live agent session is showing on the Terminal tab, the root tab bar is hidden so the PTY and accessory key row use the full bottom edge. The header Files control (folder) switches to Files without ending the session; the Terminal tab shows a Live badge until you close the session with X. Leaving Terminal dismisses the keyboard so Files and Transfers keep the full screen.
+- Accessory key row above the keyboard: a keyboard show/hide key, then `Tab` `Esc` `Ctrl` `↑` `↓` `/` `~` `-` `|`, each a 44 pt-tall key with `term.dim` outline. The live agent row also has `S-Tab`, `Y`, and `N` for permission menus. The key row uses normal keyboard avoidance (no manual keyboard-frame lift). Opening the keyboard must not resize the remote PTY (that was clipping those menus); the phone keeps the last full size until the keyboard hides. Tapping the agent screen shows the keyboard again.
 - Blinking block cursor in `term.prompt`. Respect Reduce Motion by not blinking.
 - Command output color rules: directories `term.dir` with trailing `/`, errors `term.error`, informational `term.dim`.
 - Long-press output to select text; a floating "Copy" action appears.

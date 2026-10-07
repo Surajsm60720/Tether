@@ -1,6 +1,6 @@
 # Tether
 
-Version 2.0.
+Version 2.1.
 
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
@@ -140,9 +140,11 @@ From the Terminal tab, run a program name from the allowlist (for example `claud
 1. Opens a pseudo-terminal on the Mac with your login shell PATH and credentials.
 2. Starts the agent in the current share folder, or in your home directory when the working folder is `/`.
 3. Streams output to the phone and sends keystrokes back.
-4. Keeps the process alive if you switch away or the connection drops; the phone can resume the same session.
+4. Keeps the process alive if you switch away, open Files or Transfers, or the connection drops; the phone can resume the same session.
 
-Shell operators are not allowed on this path, so a live session cannot be turned into an arbitrary script. Closing the session from the phone ends the process. Only pair a phone you trust: an agent runs as your Mac user.
+While the live agent is on the Terminal tab, the root tab bar is hidden so the PTY and accessory key row use the full bottom edge. The header folder control switches to Files without ending the session; Terminal shows a **Live** badge until you close with X. Opening the software keyboard does not resize the remote rows and columns (that was clipping permission menus). The agent key row includes `S-Tab`, `Y`, and `N`. Control-tap an http or https link (OSC 8 or plain text) to open it in Safari; a plain tap focuses the keyboard again. A keyboard show/hide key is on every terminal accessory row.
+
+Shell operators are not allowed on this path, so a live session cannot be turned into an arbitrary script. Closing the session from the phone (the Terminal X control) ends the process. Only pair a phone you trust: an agent runs as your Mac user.
 
 ## The monitor
 
@@ -238,6 +240,16 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 ## Changelog
 
 The same notes are in Settings → What's new on both the Mac and the iPhone.
+
+### 2.1
+
+Live-agent UX polish on top of 2.0.
+
+- Switch to Files or Transfers without ending a live agent; Terminal shows a Live badge until you close with X.
+- Tab bar hides while the agent fills Terminal so the PTY and key row use the full bottom edge.
+- Software keyboard no longer shrinks the remote PTY (permission menus stay on screen).
+- Keyboard show/hide key; live agents also get `S-Tab`, `Y`, and `N`.
+- Control-tap http/https links (OSC 8 or plain text) open in the phone browser.
 
 ### 2.0
 

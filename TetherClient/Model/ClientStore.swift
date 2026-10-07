@@ -872,6 +872,8 @@ final class ClientStore {
         guard agentProgram != nil, !agentExited else { return }
         let columns = min(200, max(2, columns))
         let rows = min(80, max(2, rows))
+        // Keep the last real size when another tab is selected and the terminal collapses.
+        if agentSurface != nil, columns < 10 || rows < 3 { return }
         let changed = agentSurface == nil || columns != agentColumns || rows != agentRows
         agentColumns = columns
         agentRows = rows
@@ -1127,13 +1129,20 @@ final class ClientStore {
     }
 
     private func scheduleAgentPublish() {
+        let generation = agentGeneration
+        let now = ContinuousClock.now
+        let elapsed = agentLastPaint.duration(to: now)
+        // Idle → paint on the next turn so permission menus and follow-ups show immediately.
+        // Burst → coalesce to about one frame so typing / streaming does not melt the UI.
+        if !agentFlushScheduled, elapsed >= .milliseconds(8) {
+            agentLastPaint = now
+            agentFrame += 1
+            return
+        }
         guard !agentFlushScheduled else { return }
         agentFlushScheduled = true
-        let generation = agentGeneration
-        let burst = self.agentLastPaint.duration(to: ContinuousClock.now) < .milliseconds(35)
-        let delay: Duration = burst ? .milliseconds(40) : .milliseconds(10)
         Task { @MainActor in
-            try? await Task.sleep(for: delay)
+            try? await Task.sleep(for: .milliseconds(12))
             guard generation == self.agentGeneration else { return }
             self.agentFlushScheduled = false
             guard self.agentSurface != nil else { return }
@@ -1148,7 +1157,8 @@ final class ClientStore {
         let previous = agentWriteChain
         agentWriteChain = Task { @MainActor in
             _ = await previous.value
-            try? await Task.sleep(for: .milliseconds(2))
+            // Yield once so a burst of keystrokes in the same turn can merge, without a fixed wait.
+            await Task.yield()
             self.agentWriteScheduled = false
             let payload = self.agentOutbound
             self.agentOutbound.removeAll(keepingCapacity: true)

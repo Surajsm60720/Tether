@@ -34,6 +34,7 @@ struct SessionView: View {
                 TerminalScreen(store: store)
                     .tag(1)
                     .tabItem { Label(L10n.terminal, systemImage: "terminal") }
+                    .badge(store.agentProgram != nil && !store.agentExited ? "Live" : nil)
                 TransfersView(store: store)
                     .tag(2)
                     .tabItem { Label(L10n.transfers, systemImage: "arrow.up.arrow.down.circle") }

@@ -10,6 +10,7 @@ struct TerminalScreen: View {
     @State private var draft = ""
     @State private var importing = false
     @State private var control = false
+    @State private var keyboardVisible = false
     @State private var completionHint = ""
     @State private var hintedDraft = ""
     @State private var accessoryDraft = ""
@@ -59,16 +60,36 @@ struct TerminalScreen: View {
                     .padding(.horizontal, 12)
                     .padding(.top, 4)
             }
-            AccessoryKeyRow(control: control) { token in
+            AccessoryKeyRow(control: control, keyboardVisible: keyboardVisible) { token in
                 apply(token)
+            } onKeyboard: {
+                toggleKeyboard()
             }
             }
         }
         .background(TerminalTheme.standard.bg)
-        .toolbar(store.agentProgram == nil ? .visible : .hidden, for: .tabBar)
-        .onAppear { focused = true }
+        // Live agent: hide the tab bar so the PTY and key row use the full bottom edge.
+        .toolbar(store.agentProgram != nil && !store.agentExited ? .hidden : .automatic, for: .tabBar)
+        .onAppear {
+            if store.sessionTab == 1 { focused = store.agentProgram == nil }
+        }
         .onChange(of: store.agentProgram) { _, program in
-            if program == nil { focused = true }
+            if program == nil, store.sessionTab == 1 { focused = true }
+        }
+        .onChange(of: store.sessionTab) { _, tab in
+            // Leaving Terminal must drop the keyboard so Files and Transfers get the full screen.
+            // The agent session itself stays alive in ClientStore until X ends it.
+            if tab != 1 {
+                focused = false
+            } else if store.agentProgram == nil {
+                focused = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+            keyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+            keyboardVisible = false
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
             if case let .success(url) = result {
@@ -107,6 +128,15 @@ struct TerminalScreen: View {
             }
             Spacer()
             if store.agentProgram != nil {
+                Button {
+                    // Leave Terminal without ending the live session (tab bar returns).
+                    store.sessionTab = 0
+                } label: {
+                    Image(systemName: "folder")
+                        .foregroundStyle(TerminalTheme.standard.dim)
+                }
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("Back to files")
                 Button {
                     UIPasteboard.general.string = store.agentSurface?.screen.plainText()
                 } label: {
@@ -209,6 +239,19 @@ struct TerminalScreen: View {
         Task { await store.runTerminal(line) }
     }
 
+    private func toggleKeyboard() {
+        if keyboardVisible {
+            focused = false
+            return
+        }
+        if focused {
+            focused = false
+            DispatchQueue.main.async { focused = true }
+        } else {
+            focused = true
+        }
+    }
+
     private func apply(_ token: String) {
         switch token {
         case "Tab":
@@ -263,7 +306,9 @@ struct TerminalScreen: View {
 
 struct AccessoryKeyRow: View {
     var control: Bool
+    var keyboardVisible: Bool
     var onKey: (String) -> Void
+    var onKeyboard: () -> Void
     private var keys: [String] {
         control ? ["C-c", "C-l", "Esc", "Tab", "Ctrl", "↑", "↓"] : ["Tab", "Esc", "Ctrl", "↑", "↓", "/", "~", "-", "|"]
     }
@@ -271,6 +316,18 @@ struct AccessoryKeyRow: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
+                Button(action: onKeyboard) {
+                    Image(systemName: keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
+                        .font(.body)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .foregroundStyle(TerminalTheme.standard.fg)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(TerminalTheme.standard.dim, lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(keyboardVisible ? "Hide keyboard" : "Show keyboard")
                 ForEach(keys, id: \.self) { key in
                     Button(key) { onKey(key) }
                         .buttonStyle(.plain)

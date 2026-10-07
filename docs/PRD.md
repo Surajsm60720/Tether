@@ -336,7 +336,7 @@ The terminal looks like a shell but is a **command interpreter implemented in `T
 ### 13.2 Client UI behavior
 - Prompt: `mac-name:/Share/dir $` with the path in the directory color (see `DESIGN.md`).
 - Scrollback of 2,000 lines, text selection and copy, command history (up/down via on-screen keys and hardware keyboard), Tab completion for paths and commands, `Ctrl-C` cancels a running command, `Ctrl-L` clears.
-- Accessory key row above the software keyboard: `Tab`, `Esc`, `Ctrl`, `↑`, `↓`, `/`, `~`, `-`, `|`.
+- Accessory key row above the software keyboard: keyboard show/hide, `Tab`, `Esc`, `Ctrl`, `↑`, `↓`, `/`, `~`, `-`, `|`. Hiding the keyboard returns that space to the transcript.
 - Output of `open` and `preview` presents the QuickLook sheet over the terminal.
 
 ### 13.3 Commands (v1)
@@ -370,9 +370,11 @@ Typing `claude`, `cursor`, `agent`, `codex`, or another name in `AgentPrograms` 
 
 - The host allocates a pseudo-terminal, starts the user's login shell so PATH and credentials match Terminal.app, then `exec`s the command. At `/` the directory is the user's home; inside a share it is that folder.
 - The phone parses the byte stream (cursor movement, color, alternate screen) and sends keystrokes back. Output is `term.data`. Process exit is `term.exit`.
+- Control, then a tap on an http or https link (OSC 8 or plain text), opens that address in the phone's browser. A tap without Control focuses the keyboard.
+- Opening the software keyboard must not change the remote rows/columns. Claude Code, Codex, and Cursor CLI draw permission menus at the bottom of the screen; a shrink-on-keyboard resize was wiping them until the next keystroke. The phone keeps the last full PTY size while the keyboard is up. The agent key row includes `S-Tab`, `Y`, and `N` for those prompts.
 - `term.exec` does not launch these programs. They need the live screen.
 - Shell syntax (`|`, `;`, `` ` ``, `$`) stays on the one-shot path so a live session cannot be turned into a script.
-- Closing the session from the phone sends SIGHUP. Switching apps does not: the process keeps running on the Mac, and the phone rejoins it when the connection returns.
+- Closing the session from the phone (the Terminal close control) sends SIGHUP. Switching to Files or Transfers (header folder control, or the tab bar once you leave Terminal), or switching apps, does not: the process keeps running on the Mac. While the live agent is on the Terminal tab the tab bar is hidden; it returns when you leave Terminal, with a Live badge on Terminal, and the phone rejoins the live screen when you return.
 - Terminal bytes are never logged.
 
 ---

@@ -94,6 +94,35 @@ import Testing
     #expect(history.scrollback.isEmpty)
 }
 
+@Test func controlClickOpensWebLinksOnThePhone() {
+    var linked = VTScreen(columns: 24, rows: 2)
+    linked.ingest(Data("\u{1b}]8;;https://example.com/a\u{1b}\\Docs\u{1b}]8;;\u{1b}\\ x".utf8))
+    #expect(linked.linkTarget(line: 0, column: 0) == "https://example.com/a")
+    #expect(linked.linkTarget(line: 0, column: 3) == "https://example.com/a")
+    #expect(linked.linkTarget(line: 0, column: 4) == nil)
+    #expect(linked.glyph(row: 0, column: 5) == "x")
+
+    var kept = VTScreen(columns: 12, rows: 1)
+    kept.ingest(Data("\u{1b}]8;;https://ex.com\u{7}\u{1b}[0mGo".utf8))
+    #expect(kept.linkTarget(line: 0, column: 0) == "https://ex.com")
+    #expect(kept.linkTarget(line: 0, column: 1) == "https://ex.com")
+
+    var local = VTScreen(columns: 16, rows: 1)
+    local.ingest(Data("\u{1b}]8;;file:///tmp/a\u{7}log".utf8))
+    #expect(local.linkTarget(line: 0, column: 0) == nil)
+
+    var plain = VTScreen(columns: 40, rows: 1)
+    plain.ingest(Data("see https://tether.app/docs).".utf8))
+    #expect(plain.linkTarget(line: 0, column: 4) == "https://tether.app/docs")
+    #expect(plain.linkTarget(line: 0, column: 0) == nil)
+    #expect(plain.linkTarget(line: 0, column: 8) == "https://tether.app/docs")
+
+    var history = VTScreen(columns: 8, rows: 2)
+    history.ingest(Data("\u{1b}]8;;https://ex.com/a\u{7}link\u{1b}]8;;\u{7}\r\nmore\r\nline".utf8))
+    #expect(history.linkTarget(line: 0, column: 1) == "https://ex.com/a")
+    #expect(history.linkTarget(line: 1, column: 0) == nil)
+}
+
 @Test func aKeystrokeOnlyInvalidatesTheRowItChanges() {
     var screen = VTScreen(columns: 6, rows: 4)
     let quiet = screen.stamp(forLine: 3)

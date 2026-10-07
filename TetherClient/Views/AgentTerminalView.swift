@@ -6,19 +6,27 @@ struct AgentTerminalView: View {
     @Bindable var store: ClientStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var control = false
-    @State private var keyboardVisible = true
-    @State private var focusRequest = 1
+    @State private var keyboardVisible = false
+    @State private var focusRequest = 0
     @State private var resignRequest = 0
+    @State private var typing = AgentTypingBuffer()
     @State private var following = true
     @State private var jumpToken = 0
     @State private var layoutTask: Task<Void, Never>?
+    /// Last size pushed to the Mac. Keyboard avoidance must not shrink the PTY.
+    @State private var pinnedColumns = 0
+    @State private var pinnedRows = 0
 
     var body: some View {
-        VStack(spacing: 0) {
+        // Key row sits in the normal keyboard-safe layout (no manual lift).
+        // PTY rows/columns stay pinned so Claude / Codex / Cursor menus are not clipped.
+        ZStack(alignment: .bottom) {
             GeometryReader { geo in
                 let metrics = VTMetrics.measure(fontSize: store.fontSize)
+                let cover = AgentKeyRow.bandHeight + (control ? AgentKeyRow.hintHeight : 0)
+                let usable = max(120, geo.size.height - cover)
                 let columns = max(2, Int(geo.size.width / metrics.width))
-                let rows = max(2, Int(geo.size.height / metrics.height))
+                let rows = max(2, Int(usable / metrics.height))
                 ZStack(alignment: .topLeading) {
                     VTCanvas(
                         surface: store.agentSurface,
@@ -26,7 +34,11 @@ struct AgentTerminalView: View {
                         fontSize: store.fontSize,
                         reduceMotion: reduceMotion,
                         jumpToken: jumpToken,
-                        onFollowChange: { following = $0 }
+                        control: control,
+                        coverBottom: cover,
+                        onFollowChange: { following = $0 },
+                        onFocus: { focusRequest += 1 },
+                        onOpenLink: { openLink($0) }
                     )
                     .accessibilityLabel(store.agentProgram.map { "\(AgentPrograms.displayName($0)) terminal" } ?? "Terminal")
                     if store.agentPaused, !store.agentExited, let name = store.agentProgram {
@@ -40,16 +52,15 @@ struct AgentTerminalView: View {
                     } else if let name = store.agentProgram, store.agentError == nil, !store.agentReceived, !store.agentExited {
                         status("Opening \(AgentPrograms.displayName(name)) on your Mac…", name: name)
                     }
-                    AgentKeyCapture(focusRequest: focusRequest, resignRequest: resignRequest) { text in
+                    AgentKeyCapture(focusRequest: focusRequest, resignRequest: resignRequest, typing: typing) { text in
                         type(text)
                     } onInput: { input in
                         if control { control = false }
                         store.sendAgentInput(input)
                     }
                     .frame(width: 1, height: 1)
-                    .allowsHitTesting(false)
                     if !following && !store.agentExited {
-                        latestButton
+                        latestButton(cover: cover)
                     }
                     if store.agentExited {
                         ended
@@ -60,19 +71,24 @@ struct AgentTerminalView: View {
                 .onChange(of: rows) { _, _ in scheduleLayout(columns: columns, rows: rows, immediate: false) }
                 .onChange(of: store.fontSize) { _, _ in scheduleLayout(columns: columns, rows: rows, immediate: false) }
             }
-            if control {
-                Text("Control on. Type a letter. C stops the program. Z suspends it.")
-                    .font(.caption2)
-                    .foregroundStyle(TerminalTheme.standard.dim)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 4)
+
+            VStack(spacing: 0) {
+                if control {
+                    Text("Control on. Type a letter, or tap a link to open it on this iPhone.")
+                        .font(.caption2)
+                        .foregroundStyle(TerminalTheme.standard.dim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
+                        .frame(height: AgentKeyRow.hintHeight, alignment: .topLeading)
+                }
+                AgentKeyRow(control: control, keyboardVisible: keyboardVisible) { key in
+                    press(key)
+                } onKeyboard: {
+                    toggleKeyboard()
+                }
             }
-            AgentKeyRow(control: control, keyboardVisible: keyboardVisible) { key in
-                press(key)
-            } onKeyboard: {
-                toggleKeyboard()
-            }
+            .background(TerminalTheme.standard.bg)
         }
         .background(TerminalTheme.standard.bg)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
@@ -84,9 +100,20 @@ struct AgentTerminalView: View {
         .onChange(of: store.agentExited) { _, exited in
             if exited { resignRequest += 1 }
         }
+        .onChange(of: store.agentProgram) { _, _ in
+            pinnedColumns = 0
+            pinnedRows = 0
+        }
+        .onChange(of: store.sessionTab) { _, tab in
+            // Leaving Terminal drops the keyboard; returning does not force it open.
+            if tab != 1 { resignRequest += 1 }
+        }
+        .onDisappear {
+            resignRequest += 1
+        }
     }
 
-    private var latestButton: some View {
+    private func latestButton(cover: CGFloat) -> some View {
         Button {
             following = true
             jumpToken += 1
@@ -100,29 +127,51 @@ struct AgentTerminalView: View {
         }
         .buttonStyle(.plain)
         .padding(12)
+        .padding(.bottom, cover)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         .accessibilityLabel("Jump to latest output")
     }
 
     private func scheduleLayout(columns: Int, rows: Int, immediate: Bool) {
+        // Inactive tabs can report a collapsed GeometryReader. Never push that size to the Mac.
+        guard columns >= 10, rows >= 3 else { return }
+        // Keyboard avoidance shrinks the local GeometryReader; keep the remote PTY at the
+        // larger pinned size so permission menus (Y / Shift+Tab) are not clipped.
+        let nextCols: Int
+        let nextRows: Int
+        if keyboardVisible, pinnedColumns > 0, pinnedRows > 0 {
+            nextCols = max(columns, pinnedColumns)
+            nextRows = max(rows, pinnedRows)
+        } else {
+            nextCols = columns
+            nextRows = rows
+        }
         layoutTask?.cancel()
-        layoutTask = Task {
+        layoutTask = Task { @MainActor in
             if !immediate {
                 try? await Task.sleep(for: .milliseconds(120))
             }
             guard !Task.isCancelled else { return }
-            store.noteAgentLayout(columns: columns, rows: rows)
+            pinnedColumns = nextCols
+            pinnedRows = nextRows
+            store.noteAgentLayout(columns: nextCols, rows: nextRows)
         }
     }
 
     private func toggleKeyboard() {
         if keyboardVisible {
             resignRequest += 1
-            keyboardVisible = false
         } else {
             focusRequest += 1
-            keyboardVisible = true
         }
+    }
+
+    private func openLink(_ raw: String) {
+        guard let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return }
+        control = false
+        UIApplication.shared.open(url)
     }
 
     private func status(_ text: String, name: String) -> some View {
@@ -194,12 +243,17 @@ struct AgentTerminalView: View {
     }
 
     private func press(_ key: String) {
+        typing.discard()
         switch key {
         case "Esc":
             control = false
             store.sendAgentInput(.escape)
         case "Tab":
             store.sendAgentInput(.tab)
+        case "S-Tab":
+            store.sendAgentInput(.backtab)
+        case "Y", "N":
+            store.sendAgentInput(.text(key.lowercased()))
         case "Ctrl":
             control.toggle()
         case "C-c":
@@ -227,7 +281,10 @@ private struct AgentKeyRow: View {
     var keyboardVisible: Bool
     var onKey: (String) -> Void
     var onKeyboard: () -> Void
-    private let keys = ["Esc", "Tab", "Ctrl", "C-c", "C-z", "←", "↑", "↓", "→"]
+    /// Permission menus from Claude / Codex / Cursor ask for Y and Shift+Tab often.
+    private let keys = ["Esc", "Tab", "S-Tab", "Y", "N", "Ctrl", "C-c", "C-z", "←", "↑", "↓", "→"]
+    static let bandHeight: CGFloat = 52
+    static let hintHeight: CGFloat = 22
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -260,12 +317,13 @@ private struct AgentKeyRow: View {
                                 .strokeBorder(TerminalTheme.standard.dim, lineWidth: 1)
                         }
                         .accessibilityLabel(label(key))
-                        .accessibilityHint(key == "Ctrl" ? "Turns Control on. The next letter is sent as Control plus that letter. Control C and Control Z also have their own keys." : "")
+                        .accessibilityHint(key == "Ctrl" ? "Turns Control on. The next letter is sent as Control plus that letter. Tap a link while Control is on to open it on this iPhone. Control C and Control Z also have their own keys." : "")
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
         }
+        .frame(height: Self.bandHeight)
         .background(TerminalTheme.standard.bg)
     }
 
@@ -273,6 +331,9 @@ private struct AgentKeyRow: View {
         switch key {
         case "C-c": "Control C, stop"
         case "C-z": "Control Z, suspend"
+        case "S-Tab": "Shift Tab"
+        case "Y": "Yes"
+        case "N": "No"
         case "←": "Left"
         case "↑": "Up"
         case "↓": "Down"
@@ -298,11 +359,19 @@ private struct VTCanvas: UIViewRepresentable {
     var fontSize: Double
     var reduceMotion: Bool
     var jumpToken: Int
+    var control: Bool
+    var coverBottom: CGFloat
     var onFollowChange: (Bool) -> Void
+    var onFocus: () -> Void
+    var onOpenLink: (String) -> Void
 
     func makeUIView(context: Context) -> VTScrollView {
         let view = VTScrollView()
         view.onFollowChange = onFollowChange
+        view.onFocus = onFocus
+        view.onOpenLink = onOpenLink
+        view.controlHeld = control
+        view.coverBottom = coverBottom
         view.canvas.isAccessibilityElement = true
         view.canvas.accessibilityLabel = "Live terminal"
         return view
@@ -310,11 +379,22 @@ private struct VTCanvas: UIViewRepresentable {
 
     func updateUIView(_ view: VTScrollView, context: Context) {
         view.onFollowChange = onFollowChange
+        view.onFocus = onFocus
+        view.onOpenLink = onOpenLink
+        view.controlHeld = control
+        view.coverBottom = coverBottom
         let motionChanged = view.canvas.reduceMotion != reduceMotion
         view.canvas.reduceMotion = reduceMotion
         if motionChanged { view.canvas.restartBlink() }
         view.surface = surface
+        let previousFrame = context.coordinator.frame
         view.apply(fontSize: fontSize)
+        if previousFrame != frame {
+            context.coordinator.frame = frame
+            if view.follow {
+                view.scrollToEnd(animated: false)
+            }
+        }
         if context.coordinator.jumpToken != jumpToken {
             context.coordinator.jumpToken = jumpToken
             view.follow = true
@@ -327,6 +407,7 @@ private struct VTCanvas: UIViewRepresentable {
 
     final class Coordinator {
         var jumpToken = 0
+        var frame = -1
     }
 }
 
@@ -334,20 +415,31 @@ private final class VTScrollView: UIScrollView, UIScrollViewDelegate {
     let canvas = VTDrawView()
     var surface: AgentSurface?
     var follow = true
+    var controlHeld = false
+    /// Key row covering the bottom of this scroll view.
+    var coverBottom: CGFloat = 0 {
+        didSet {
+            guard abs(coverBottom - oldValue) > 0.5 else { return }
+            updateBottomInset()
+            if follow { scrollToEnd(animated: false) }
+        }
+    }
     var onFollowChange: ((Bool) -> Void)?
-    private var keyboardFrame: CGRect?
+    var onFocus: (() -> Void)?
+    var onOpenLink: ((String) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = VTPalette.background
         alwaysBounceVertical = true
-        keyboardDismissMode = .interactive
+        keyboardDismissMode = .none
         contentInsetAdjustmentBehavior = .never
         delaysContentTouches = false
         delegate = self
         addSubview(canvas)
-        NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillHideNotification, object: nil)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+        tap.cancelsTouchesInView = false
+        addGestureRecognizer(tap)
     }
 
     required init?(coder: NSCoder) { return nil }
@@ -369,7 +461,7 @@ private final class VTScrollView: UIScrollView, UIScrollViewDelegate {
         canvas.isOpaque = true
         canvas.backgroundColor = VTPalette.background
         positionCanvas()
-        updateKeyboardInset()
+        updateBottomInset()
         if follow, !isTracking, !isDragging, !isDecelerating {
             scrollToEnd(animated: false)
         }
@@ -385,10 +477,38 @@ private final class VTScrollView: UIScrollView, UIScrollViewDelegate {
 
     func scrollToEnd(animated: Bool) {
         layoutIfNeeded()
+        let top = adjustedContentInset.top
         let inset = adjustedContentInset.bottom
-        let y = max(-adjustedContentInset.top, contentSize.height - bounds.height + inset)
+        let visible = bounds.height - inset - top
+        // Short startup output stays pinned to the top; a large bottom inset must not
+        // scroll the first lines off-screen (that looked like a stuck "Latest" jump).
+        let y: CGFloat
+        if contentSize.height <= visible + 0.5 {
+            y = -top
+        } else {
+            y = max(-top, contentSize.height - bounds.height + inset)
+        }
         if !animated, abs(contentOffset.y - y) < 0.5 { return }
         setContentOffset(CGPoint(x: 0, y: y), animated: animated)
+    }
+
+    @objc private func tapped(_ gesture: UITapGestureRecognizer) {
+        let modified = controlHeld || gesture.modifierFlags.contains(.control) || gesture.modifierFlags.contains(.command)
+        if modified, let target = link(at: gesture.location(in: canvas)) {
+            onOpenLink?(target)
+            return
+        }
+        onFocus?()
+    }
+
+    private func link(at point: CGPoint) -> String? {
+        guard let screen = surface?.screen else { return nil }
+        let metrics = canvas.metrics
+        guard metrics.width > 0, metrics.height > 0 else { return nil }
+        let line = Int((canvas.originY + point.y) / metrics.height)
+        let column = Int(point.x / metrics.width)
+        guard line >= 0, column >= 0 else { return nil }
+        return screen.linkTarget(line: line, column: column)
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
@@ -420,32 +540,11 @@ private final class VTScrollView: UIScrollView, UIScrollViewDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         positionCanvas()
-        updateKeyboardInset()
+        updateBottomInset()
     }
 
-    deinit {
-        NotificationCenter.default.removeObserver(self)
-    }
-
-    @objc private func keyboardChanged(_ note: Notification) {
-        if note.name == UIResponder.keyboardWillHideNotification {
-            keyboardFrame = nil
-        } else if let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
-            keyboardFrame = frame
-        }
-        updateKeyboardInset()
-        if follow { scrollToEnd(animated: false) }
-    }
-
-    private func updateKeyboardInset() {
-        let overlap: CGFloat
-        if let keyboardFrame, let window {
-            let inWindow = window.convert(keyboardFrame, from: nil)
-            let inView = convert(inWindow, from: window)
-            overlap = max(0, bounds.maxY - inView.minY)
-        } else {
-            overlap = 0
-        }
+    private func updateBottomInset() {
+        let overlap = max(0, coverBottom)
         guard abs(contentInset.bottom - overlap) > 0.5 else { return }
         contentInset.bottom = overlap
         verticalScrollIndicatorInsets.bottom = overlap
@@ -740,9 +839,15 @@ private enum VTPalette {
     }
 }
 
+private final class AgentTypingBuffer {
+    weak var field: AgentTextField?
+    func discard() { field?.discardBuffer() }
+}
+
 private struct AgentKeyCapture: UIViewRepresentable {
     var focusRequest: Int
     var resignRequest: Int
+    var typing: AgentTypingBuffer
     var onText: (String) -> Void
     var onInput: (VTInput) -> Void
 
@@ -760,21 +865,35 @@ private struct AgentKeyCapture: UIViewRepresentable {
         field.tintColor = .clear
         field.textColor = .clear
         field.backgroundColor = .clear
-        field.text = " "
+        field.isUserInteractionEnabled = true
+        field.addTarget(field, action: #selector(AgentTextField.editingChanged), for: .editingChanged)
+        typing.field = field
         return field
     }
 
     func updateUIView(_ field: AgentTextField, context: Context) {
         context.coordinator.onText = onText
         context.coordinator.onInput = onInput
-        if context.coordinator.focusRequest != focusRequest {
-            guard field.window != nil else { return }
-            context.coordinator.focusRequest = focusRequest
-            field.becomeFirstResponder()
-        }
+        typing.field = field
         if context.coordinator.resignRequest != resignRequest {
             context.coordinator.resignRequest = resignRequest
-            if resignRequest > 0 { field.resignFirstResponder() }
+            if resignRequest > 0 {
+                field.needsFocus = false
+                field.resignFirstResponder()
+            }
+        }
+        guard context.coordinator.focusRequest != focusRequest else { return }
+        let request = focusRequest
+        field.needsFocus = true
+        let focus = {
+            guard field.needsFocus, field.window != nil else { return }
+            guard field.isFirstResponder || field.becomeFirstResponder() else { return }
+            context.coordinator.focusRequest = request
+            field.needsFocus = false
+        }
+        focus()
+        if field.needsFocus {
+            DispatchQueue.main.async(execute: focus)
         }
     }
 
@@ -792,15 +911,22 @@ private struct AgentKeyCapture: UIViewRepresentable {
         }
 
         func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
-            if string.isEmpty {
-                onInput(.backspace)
-            } else if string == "\t" {
+            if string == "\t" {
+                (textField as? AgentTextField)?.discardBuffer()
                 emit(.tab, mark: "tab")
-            } else if string == "\n" || string == "\r" {
-                onInput(.enter)
-            } else {
-                onText(string)
+                return false
             }
+            if string == "\n" || string == "\r" {
+                (textField as? AgentTextField)?.submitLine()
+                return false
+            }
+            // Accept the edit so dictation and paste land in one pass. Rejecting
+            // them makes the keyboard drip the phrase out a word at a time.
+            return true
+        }
+
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            (textField as? AgentTextField)?.submitLine()
             return false
         }
 
@@ -819,6 +945,98 @@ private struct AgentKeyCapture: UIViewRepresentable {
 
 private final class AgentTextField: UITextField {
     weak var coordinator: AgentKeyCapture.Coordinator?
+    var needsFocus = false
+    private var mirror = ""
+    private var updating = false
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil, needsFocus else { return }
+        if becomeFirstResponder() { needsFocus = false }
+    }
+
+    /// Empty terminal prompts still need Backspace. The software keyboard only
+    /// sends it when the field reports that it has text.
+    override var hasText: Bool { true }
+
+    func discardBuffer() {
+        if markedTextRange != nil {
+            let committed = text ?? ""
+            updating = true
+            unmarkText()
+            text = committed
+            updating = false
+            pushDifference()
+        }
+        updating = true
+        text = ""
+        mirror = ""
+        updating = false
+    }
+
+    func submitLine() {
+        if markedTextRange != nil {
+            let committed = text ?? ""
+            updating = true
+            unmarkText()
+            text = committed
+            updating = false
+        }
+        pushDifference()
+        discardBuffer()
+        coordinator?.emit(.enter, mark: "enter")
+    }
+
+    @objc func editingChanged() {
+        pushDifference()
+    }
+
+    override func deleteBackward() {
+        if markedTextRange != nil {
+            super.deleteBackward()
+            return
+        }
+        if let current = text, !current.isEmpty {
+            updating = true
+            let next = String(current.dropLast())
+            text = next
+            mirror = next
+            updating = false
+        }
+        coordinator?.onInput(.backspace)
+    }
+
+    private func pushDifference() {
+        guard !updating, markedTextRange == nil else { return }
+        let next = text ?? ""
+        if next.hasPrefix(mirror) {
+            let suffix = String(next.dropFirst(mirror.count))
+            mirror = next
+            if !suffix.isEmpty { coordinator?.onText(suffix) }
+            return
+        }
+        if mirror.hasPrefix(next) {
+            let removed = mirror.count - next.count
+            mirror = next
+            for _ in 0..<removed { coordinator?.onInput(.backspace) }
+            return
+        }
+        let common = sharedPrefixCount(mirror, next)
+        let removed = mirror.count - common
+        let suffix = String(next.dropFirst(common))
+        mirror = next
+        for _ in 0..<removed { coordinator?.onInput(.backspace) }
+        if !suffix.isEmpty { coordinator?.onText(suffix) }
+    }
+
+    private func sharedPrefixCount(_ left: String, _ right: String) -> Int {
+        var count = 0
+        for (a, b) in zip(left, right) {
+            if a != b { break }
+            count += 1
+        }
+        return count
+    }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var rest = Set<UIPress>()
@@ -835,25 +1053,43 @@ private final class AgentTextField: UITextField {
         if key.modifierFlags.contains(.control),
            let character = key.charactersIgnoringModifiers.first,
            character.isASCII {
+            discardBuffer()
             coordinator.emit(.control(character), mark: "control-\(String(character).lowercased())")
             return true
         }
         switch key.keyCode {
-        case .keyboardUpArrow: coordinator.onInput(.up)
-        case .keyboardDownArrow: coordinator.onInput(.down)
-        case .keyboardLeftArrow: coordinator.onInput(.left)
-        case .keyboardRightArrow: coordinator.onInput(.right)
-        case .keyboardEscape: coordinator.onInput(.escape)
+        case .keyboardUpArrow:
+            discardBuffer()
+            coordinator.onInput(.up)
+        case .keyboardDownArrow:
+            discardBuffer()
+            coordinator.onInput(.down)
+        case .keyboardLeftArrow:
+            discardBuffer()
+            coordinator.onInput(.left)
+        case .keyboardRightArrow:
+            discardBuffer()
+            coordinator.onInput(.right)
+        case .keyboardEscape:
+            discardBuffer()
+            coordinator.onInput(.escape)
         case .keyboardTab:
+            discardBuffer()
             if key.modifierFlags.contains(.shift) {
                 coordinator.emit(.backtab, mark: "backtab")
             } else {
                 coordinator.emit(.tab, mark: "tab")
             }
-        case .keyboardHome: coordinator.onInput(.home)
-        case .keyboardEnd: coordinator.onInput(.end)
-        case .keyboardDeleteOrBackspace: coordinator.onInput(.backspace)
-        default: return false
+        case .keyboardHome:
+            discardBuffer()
+            coordinator.onInput(.home)
+        case .keyboardEnd:
+            discardBuffer()
+            coordinator.onInput(.end)
+        case .keyboardDeleteOrBackspace:
+            return false
+        default:
+            return false
         }
         return true
     }
@@ -873,15 +1109,18 @@ private final class AgentTextField: UITextField {
     }
 
     @objc private func pressTab() {
+        discardBuffer()
         coordinator?.emit(.tab, mark: "tab")
     }
 
     @objc private func pressBacktab() {
+        discardBuffer()
         coordinator?.emit(.backtab, mark: "backtab")
     }
 
     @objc private func pressControl(_ sender: UIKeyCommand) {
         guard let character = sender.input?.first else { return }
+        discardBuffer()
         coordinator?.emit(.control(character), mark: "control-\(String(character).lowercased())")
     }
 }
