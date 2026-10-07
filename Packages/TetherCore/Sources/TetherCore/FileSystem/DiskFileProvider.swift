@@ -40,18 +40,26 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
             throw ProtocolFailure(code: .badRequest, message: "That item is not a folder.")
         }
         let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
-        let urls = try FileManager.default.contentsOfDirectory(
+        // Cap how many names we materialize so a huge flat folder cannot OOM the host.
+        let scanCap = max(TetherCoreInfo.maxListEntries * 4, 2_000)
+        var names: [URL] = []
+        names.reserveCapacity(min(scanCap, 256))
+        let enumerator = FileManager.default.enumerator(
             at: located.url,
             includingPropertiesForKeys: Array(Self.metaKeys),
-            options: options
+            options: options.union(.skipsSubdirectoryDescendants)
         )
-        let sorted = urls
-            .filter { !$0.lastPathComponent.hasPrefix(".tether-upload-") }
-            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        while let url = enumerator?.nextObject() as? URL {
+            if url.lastPathComponent.hasPrefix(".tether-upload-") { continue }
+            names.append(url)
+            if names.count >= scanCap { break }
+        }
+        let sorted = names.sorted {
+            $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+        }
         let start = min(max(offset, 0), sorted.count)
         let page = ProviderSupport.clampLimit(limit)
         let end = min(start + page, sorted.count)
-        // Build entries only for the page we return so huge dirs do not inflate CPU/memory.
         return sorted[start..<end].compactMap { url in
             entry(for: url, budget: budget, includeHidden: includeHidden)
         }

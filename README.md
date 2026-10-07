@@ -1,6 +1,6 @@
 # Tether
 
-Version 1.1.
+Version 1.2.
 
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, and run a terminal against those folders, without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
@@ -225,9 +225,19 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 
 The same notes are in Settings → What's new on both the Mac and the iPhone.
 
+### 1.2
+
+Continued security and reliability hardening on the 1.x line.
+
+- Foreground probe reconnects half-dead sockets instead of hanging actions.
+- Cancelled transfers free waiters immediately.
+- Cache and downloads use Complete protection while the device is locked.
+- Monitor process list is limited to your Mac user account (short names only).
+- Huge folder listings use a scan cap; empty reads back off instead of spinning.
+
 ### 1.1
 
-Security patch over 1.0. Until remaining hardening items are done, releases stay on the 1.x patch line (1.1, 1.2, …).
+Security patch over 1.0.
 
 - Phone terminal is virtual-only: no Mac `zsh` fall-through.
 - Caps and timeouts on inbound handshakes; global lock after repeated handshake failures.

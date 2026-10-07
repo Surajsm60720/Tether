@@ -82,7 +82,7 @@ public enum RelayClient {
             if buffer.count > limit { throw RelayError.badPrelude }
             let chunk = try await stream.receive(maximumLength: 256)
             if chunk.isEmpty {
-                await Task.yield()
+                try await Task.sleep(for: .milliseconds(25))
                 continue
             }
             buffer.append(chunk)

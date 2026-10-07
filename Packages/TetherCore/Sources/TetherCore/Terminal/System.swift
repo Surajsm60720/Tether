@@ -881,10 +881,26 @@ enum ProcessReader {
         let written = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &buffer, bytes)
         guard written > 0 else { return [] }
         let limit = Int(written) / MemoryLayout<pid_t>.stride
+        let mine = getuid()
+        // Only the Mac user's own processes — not every process on the system.
         return buffer.prefix(limit).compactMap { value in
             let pid = Int(value)
-            return pid > 0 ? pid : nil
+            guard pid > 0, ownerUID(pid) == mine else { return nil }
+            return pid
         }
+    }
+
+    private static func ownerUID(_ pid: Int) -> uid_t? {
+        var info = proc_bsdshortinfo()
+        let size = proc_pidinfo(
+            Int32(pid),
+            PROC_PIDT_SHORTBSDINFO,
+            0,
+            &info,
+            Int32(MemoryLayout<proc_bsdshortinfo>.stride)
+        )
+        guard size > 0 else { return nil }
+        return info.pbsi_uid
     }
 
     private static func processName(_ pid: Int) -> String {
@@ -892,7 +908,9 @@ enum ProcessReader {
         let length = proc_name(Int32(pid), &buffer, UInt32(buffer.count))
         guard length > 0 else { return "" }
         let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-        return String(decoding: bytes, as: UTF8.self)
+        let raw = String(decoding: bytes, as: UTF8.self)
+        // Short display name only — never a full path.
+        return (raw as NSString).lastPathComponent
     }
 
     private static func taskInfo(_ pid: Int) -> (time: UInt64, memory: UInt64, threads: Int)? {

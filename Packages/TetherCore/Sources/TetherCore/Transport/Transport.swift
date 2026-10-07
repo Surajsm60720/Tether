@@ -259,7 +259,7 @@ public final class FrameReader: @unchecked Sendable {
             if let payload = try decoder.pop() { return payload }
             let chunk = try await stream.receive(maximumLength: 64 * 1024)
             if chunk.isEmpty {
-                await Task.yield()
+                try await Task.sleep(for: .milliseconds(25))
                 continue
             }
             decoder.append(chunk)

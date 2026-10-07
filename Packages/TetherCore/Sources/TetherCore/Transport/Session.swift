@@ -398,7 +398,7 @@ private actor HostSession {
             }
             let chunk = try await stream.receive(maximumLength: 64 * 1024)
             if chunk.isEmpty {
-                await Task.yield()
+                try await Task.sleep(for: .milliseconds(25))
                 continue
             }
             decoder.append(chunk)
@@ -740,19 +740,34 @@ public actor ClientConnection {
 
     private func beat() async {
         while !closed {
-            try? await Task.sleep(for: .seconds(10))
+            try? await Task.sleep(for: .seconds(8))
             if closed { return }
-            if Date().timeIntervalSince(lastReceived) > 45 {
+            if Date().timeIntervalSince(lastReceived) > 25 {
                 await shutdown(notify: true)
                 return
             }
             var header = Header()
             header.op = Op.ping
-            _ = try? await roundTrip(header, timeout: .seconds(20))
+            _ = try? await roundTrip(header, timeout: .seconds(12))
+        }
+    }
+
+    /// Fast liveness probe used when the iPhone returns to the foreground.
+    public func checkAlive(timeout: Duration = .seconds(3)) async -> Bool {
+        guard !closed else { return false }
+        do {
+            var header = Header()
+            header.op = Op.ping
+            _ = try await roundTrip(header, timeout: timeout)
+            return true
+        } catch {
+            await shutdown(notify: true)
+            return false
         }
     }
 
     private func roundTrip(_ header: Header, body: Data = Data(), timeout: Duration) async throws -> WireMessage {
+        try Task.checkCancellation()
         var header = header
         if header.requestId == nil { header.requestId = takeID() }
         let id = header.requestId ?? 0
@@ -766,7 +781,13 @@ public actor ClientConnection {
         }
         do {
             let reply = try await withThrowingTaskGroup(of: WireMessage.self) { group in
-                group.addTask { try await box.value() }
+                group.addTask {
+                    try await withTaskCancellationHandler {
+                        try await box.value()
+                    } onCancel: {
+                        box.finish(.failure(CancellationError()))
+                    }
+                }
                 group.addTask {
                     try await Task.sleep(for: timeout)
                     throw ProtocolFailure.timeout
@@ -832,7 +853,7 @@ public actor ClientConnection {
             }
             let chunk = try await stream.receive(maximumLength: 64 * 1024)
             if chunk.isEmpty {
-                await Task.yield()
+                try await Task.sleep(for: .milliseconds(25))
                 continue
             }
             decoder.append(chunk)
@@ -853,10 +874,14 @@ final class WaitBox: @unchecked Sendable {
     private var result: Result<WireMessage, Error>?
 
     func value() async throws -> WireMessage {
-        try await withCheckedThrowingContinuation { continuation in
-            if let existing = claim(continuation) {
-                continuation.resume(with: existing)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                if let existing = claim(continuation) {
+                    continuation.resume(with: existing)
+                }
             }
+        } onCancel: {
+            finish(.failure(CancellationError()))
         }
     }
 

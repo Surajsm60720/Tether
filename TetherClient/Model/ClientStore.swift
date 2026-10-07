@@ -837,7 +837,17 @@ final class ClientStore {
 
     func sceneBecameActive() {
         if !showPrimer { startPhoneListener() }
-        guard connected, connection == nil, activeHost != nil, !demoMode, !intentionalDisconnect else { return }
+        guard connected, activeHost != nil, !demoMode, !intentionalDisconnect else { return }
+        if let connection {
+            Task { [weak self] in
+                let alive = await connection.checkAlive()
+                guard let self, !alive else { return }
+                await MainActor.run {
+                    self.handleDisconnect()
+                }
+            }
+            return
+        }
         reconnecting = true
         scheduleReconnect()
     }
@@ -1177,17 +1187,32 @@ final class ClientStore {
         let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
         let folder = cacheDirectory.appendingPathComponent(digest, isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        protectAtRest(folder)
         evictIfNeeded()
         let safe = (fileName as NSString).lastPathComponent
         return folder.appendingPathComponent(safe.isEmpty ? "File" : safe)
     }
 
     private var cacheDirectory: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Tether", isDirectory: true)
+        let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Tether", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        protectAtRest(url)
+        return url
     }
 
     private var documentsDirectory: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Tether Downloads", isDirectory: true)
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Tether Downloads", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        protectAtRest(url)
+        return url
+    }
+
+    /// Keep cached/downloaded bytes unavailable while the device is locked.
+    private func protectAtRest(_ url: URL) {
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.complete],
+            ofItemAtPath: url.path
+        )
     }
 
     private func refreshCacheSize() {

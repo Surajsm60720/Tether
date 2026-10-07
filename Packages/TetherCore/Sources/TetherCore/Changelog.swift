@@ -14,9 +14,17 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "1.1"
+    public static let current = "1.2"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "1.2", items: [
+            "Faster reconnect when the iPhone wakes: dead sockets are probed and replaced instead of hanging.",
+            "Cancelled transfers release their waiters immediately instead of leaking for the session lifetime.",
+            "Preview cache and downloads use Complete file protection while the device is locked.",
+            "The monitor only lists processes owned by your Mac user account, with short names (no paths).",
+            "Huge folders stop after a bounded scan so listing cannot exhaust host memory.",
+            "Empty network reads back off instead of spinning the CPU.",
+        ]),
         ReleaseNotes(version: "1.1", items: [
             "Security hardening: the phone terminal no longer runs a Mac shell; only built-in commands work.",
             "Caps inbound connections and handshake time so silent TCP floods cannot exhaust the Mac.",

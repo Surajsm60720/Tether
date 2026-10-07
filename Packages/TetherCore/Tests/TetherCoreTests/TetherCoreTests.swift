@@ -231,6 +231,23 @@ import Testing
     #expect(gate.tryAdmit())
 }
 
+@Test func waitBoxFinishesWhenWaitingTaskIsCancelled() async {
+    let box = WaitBox()
+    let task = Task {
+        try await box.value()
+    }
+    try? await Task.sleep(for: .milliseconds(20))
+    task.cancel()
+    do {
+        _ = try await task.value
+        Issue.record("Expected cancellation")
+    } catch is CancellationError {
+        // Expected.
+    } catch {
+        Issue.record("Unexpected error \(error)")
+    }
+}
+
 @Test func memoryFilesystemAndTerminal() async throws {
     let files = MemoryFileProvider()
     files.addShare(name: "Docs", writable: true)
@@ -616,6 +633,7 @@ private final class TestHost: HostServing, @unchecked Sendable {
     #expect(!stats.cores.isEmpty)
     #expect(stats.memoryTotal > 0)
     #expect(!stats.processes.isEmpty)
+    #expect(stats.processes.allSatisfy { !$0.name.contains("/") })
     if !stats.temperatures.isEmpty {
         #expect(stats.temperatures.allSatisfy { $0.celsius > 1 && $0.celsius < 125 })
     }
