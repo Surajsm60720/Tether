@@ -110,7 +110,7 @@ Rules:
 ### 6.5 Files
 - **List mode (default):** 40 pt icon/thumbnail leading, name (headline weight regular), secondary line "Today · 2.4 MB" or "12 items" for folders.
 - **Grid mode:** adaptive columns (minimum 110 pt), square thumbnail, name below (2 lines max, middle truncation).
-- **Toolbar:** view toggle, sort menu, "+" (Upload). **Search field:** filters the current folder by name (`.searchable`).
+- **Toolbar:** view toggle, sort menu, "+" (Upload). **Search field:** `.searchable` prompt "Search files"; walks shared folders live and lists matches with full virtual path (tap file to preview, tap folder to navigate). Empty query returns to the current-folder list/grid.
 - **Row actions:** swipe leading = Download; context menu = Preview, Download, Share, Get Info.
 - **Thumbnails:** load lazily; show a symbol placeholder immediately; cross-fade in (150 ms).
 - **Folders that cannot be read:** row dimmed with a lock icon; tap shows a brief explanation.
@@ -133,6 +133,7 @@ Rules:
 - Command output color rules: directories `term.dir` with trailing `/`, errors `term.error`, informational `term.dim`.
 - Long-press output to select text; a floating "Copy" action appears.
 - Welcome line on open: `Tether terminal · type 'help' for commands` in `term.dim`.
+- Virtual shell only: a scrollable suggestion list above the prompt (folder/doc/terminal SF Symbol + name, max height ~260 pt, visible scroll indicators, count header) for live path and command matches; the full match list is kept — never truncated to a “N more” hint. Command rows show typed syntax and a short description; tap inserts. `help` shows the same height of scrollable catalog with syntax (flags/placeholders) per row. Esc dismisses the menu before clearing the draft. Live agents keep the PTY Tab behavior; no dropdown on the agent screen.
 
 ### 6.9 Settings
 Grouped list: Device name, Cache (size + Clear), Terminal font size slider, Forget all Macs (destructive, with confirmation), About with version and What's new.
@@ -157,10 +158,13 @@ Grouped list: Device name, Cache (size + Clear), Terminal font size slider, Forg
 ### 7.3 Approval alert
 Native `NSAlert` style: title "Allow *<device>* to access your shared folders?", body "It will be able to browse and download from: *<share names>*." Buttons: **Allow** (default), **Don't Allow**. For shares that allow upload, add: "It can also add files to: *<names>*."
 
-### 7.4 Settings window
-Standard Settings scene with tabs: **General** (Mac name, launch at login, require approval each session), **Folders** (table of shares with access toggles and remove), **Devices** (paired list, last seen, Revoke), **Activity** (last 100 events, monospaced, filter field, Clear).
+### 7.4 Main window sidebar
+Primary pages: Status, Shared folders, iPhones, Other networks, Activity. A separate bottom sidebar row is a **Settings** `SettingsLink` (gear) that opens the full Settings window — the same scene as ⌘, and the menu bar popover — not a partial in-window copy.
 
-### 7.5 Behavior polish
+### 7.5 Settings window
+Standard Settings scene (⌘, / menu bar **Settings…** / sidebar Settings) with tabs: **General** (Mac name, launch at login, require approval each session, prevent sleep), **Folders**, **Devices**, **Other networks**, **Activity**, **What's new**.
+
+### 7.6 Behavior polish
 - Accessible keyboard shortcuts: `⌘,` Settings, `⌘N` Pair new iPhone (when the popover is key), `⌘Q` Quit.
 - Respect Dark Mode and "Reduce transparency".
 - No Dock icon by default; no first-launch window except a short welcome that asks the user to pick a folder to share.

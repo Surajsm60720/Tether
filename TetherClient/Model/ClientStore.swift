@@ -72,6 +72,9 @@ final class ClientStore {
     var connectingName: String?
     var phoneVisible = false
     var searchText = ""
+    /// Global name hits across shared folders while the Files search field is non-empty.
+    var fileSearchHits: [FileSearchHit] = []
+    var fileSearchRunning = false
     var requestUpload = false
     var selecting = false
     var selection: Set<String> = []
@@ -79,10 +82,17 @@ final class ClientStore {
     var feedbackCue: FeedbackCue = .success
     var feedbackTick = 0
     var remoteHostIDs: Set<String> = []
+    /// Mirrors the Mac preference. Synced while connected; applied on the next connect if offline.
+    var preventSleepWhileActive: Bool
+    /// After `help`, the terminal shows a tappable command catalog until dismissed or a row is picked.
+    var showCommandHelp = false
 
     private let context: ModelContext
     private let browser = TetherBrowser()
     private let phoneListener = TetherListener()
+    private let pathMonitor = NWPathMonitor()
+    private var pathMonitorStarted = false
+    private var lastPathFingerprint: String?
     private var connection: ClientConnection?
     private var demoFiles: MemoryFileProvider?
     private var lastDownload: URL?
@@ -113,6 +123,9 @@ final class ClientStore {
     private var agentEarly: [String: Data] = [:]
     private var agentEarlyExit: [String: Int] = [:]
     private var agentOutbound = Data()
+    private var completionListCache: [String: (at: ContinuousClock.Instant, names: [CompletionName])] = [:]
+    private let completionListTTL: Duration = .seconds(2)
+    private var fileSearchToken = 0
     private var agentWriteScheduled = false
     private var agentWriteChain: Task<Void, Never> = Task {}
     private var agentHostID: String?
@@ -123,6 +136,7 @@ final class ClientStore {
         deviceName = defaults.string(forKey: "deviceName") ?? UIDevice.current.name
         demoMode = defaults.bool(forKey: "demoMode")
         fontSize = defaults.object(forKey: "terminalFontSize") as? Double ?? 14
+        preventSleepWhileActive = defaults.object(forKey: "preventSleepWhileActive") as? Bool ?? true
         deviceID = Self.loadDeviceID()
         ClientStore.shared = self
         reloadPaired()
@@ -130,6 +144,7 @@ final class ClientStore {
         refreshCacheSize()
         restoreAgent()
         if preview { return }
+        startPathMonitor()
         if !defaults.bool(forKey: "didAcceptPrimer") {
             showPrimer = true
         } else {
@@ -274,6 +289,28 @@ final class ClientStore {
         UserDefaults.standard.set(fontSize, forKey: "terminalFontSize")
     }
 
+    func setPreventSleepWhileActive(_ value: Bool) {
+        preventSleepWhileActive = value
+        UserDefaults.standard.set(value, forKey: "preventSleepWhileActive")
+        guard let connection else { return }
+        Task {
+            if let applied = try? await connection.setHostPreventSleep(value) {
+                await MainActor.run { self.preventSleepWhileActive = applied }
+            }
+        }
+    }
+
+    func refreshHostPrefsIfConnected() {
+        guard let connection else { return }
+        Task {
+            guard let current = try? await connection.hostPrefs() else { return }
+            await MainActor.run {
+                self.preventSleepWhileActive = current
+                UserDefaults.standard.set(current, forKey: "preventSleepWhileActive")
+            }
+        }
+    }
+
     func setDemo(_ enabled: Bool) {
         demoMode = enabled
         UserDefaults.standard.set(enabled, forKey: "demoMode")
@@ -355,6 +392,7 @@ final class ClientStore {
                 terminalLines = [TermLine(text: L10n.termWelcome, kind: .dim)]
             }
             try await refresh()
+            await syncPreventSleepPreference()
             await resumeAgentIfNeeded(host: item.id)
         } catch {
             await stream.close()
@@ -662,6 +700,7 @@ final class ClientStore {
                 let data = try Data(contentsOf: url)
                 try demoFiles.writeFile(path: full, data: data)
                 updateTransfer(id, sent: UInt64(data.count), total: UInt64(data.count), state: .completed)
+                invalidateCompletionCache()
             } else if let connection {
                 try await connection.upload(file: url, toDirectory: path, fileName: name) { sent, total in
                     Task { @MainActor in
@@ -670,6 +709,7 @@ final class ClientStore {
                 }
                 updateTransfer(id, sent: size, total: max(size, 1), state: .completed)
             }
+            invalidateCompletionCache()
             try? await refresh()
         } catch is CancellationError {
             updateTransfer(id, sent: 0, total: size, state: .failed, message: "Cancelled")
@@ -759,8 +799,18 @@ final class ClientStore {
         return paths
     }
 
+    var isFileSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var sortedEntries: [FileEntry] {
-        let filtered = entries.filter { searchText.isEmpty || $0.name.localizedCaseInsensitiveContains(searchText) }
+        let filtered: [FileEntry]
+        if isFileSearching {
+            // While a global walk runs, keep showing local matches so the list does not go blank.
+            filtered = entries.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        } else {
+            filtered = entries
+        }
         return filtered.sorted { lhs, rhs in
             if lhs.kind == .dir, rhs.kind != .dir { return true }
             if rhs.kind == .dir, lhs.kind != .dir { return false }
@@ -770,6 +820,77 @@ final class ClientStore {
             case .size: return lhs.size > rhs.size
             case .kind: return lhs.name.split(separator: ".").last ?? "" < rhs.name.split(separator: ".").last ?? ""
             }
+        }
+    }
+
+    func updateFileSearch(_ text: String) {
+        searchText = text
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        fileSearchToken += 1
+        let token = fileSearchToken
+        guard !query.isEmpty else {
+            fileSearchHits = []
+            fileSearchRunning = false
+            return
+        }
+        fileSearchRunning = true
+        Task {
+            try? await Task.sleep(for: .milliseconds(220))
+            guard token == fileSearchToken else { return }
+            let hits = await searchFiles(query: query)
+            guard token == fileSearchToken else { return }
+            fileSearchHits = hits
+            fileSearchRunning = false
+        }
+    }
+
+    func openSearchHit(_ hit: FileSearchHit) async {
+        if hit.entry.kind == .dir {
+            clearFileSearch()
+            path = hit.path
+            selection.removeAll()
+            try? await refresh()
+            return
+        }
+        let parent = hit.folder
+        if path != parent {
+            path = parent
+            try? await refresh()
+        }
+        download(hit.entry, preview: true)
+    }
+
+    func clearFileSearch() {
+        fileSearchToken += 1
+        searchText = ""
+        fileSearchHits = []
+        fileSearchRunning = false
+    }
+
+    private func searchFiles(query: String) async -> [FileSearchHit] {
+        // Capture Sendable backends only — do not close over MainActor `self`.
+        let connection = connection
+        let demoFiles = demoFiles
+        do {
+            return try await FileSearch.find(
+                pattern: query,
+                root: .root,
+                match: .substring,
+                includeDirectories: true,
+                list: { virtual in
+                    if let demoFiles {
+                        return (try? await demoFiles.list(
+                            path: virtual,
+                            offset: 0,
+                            limit: 1000,
+                            includeHidden: false
+                        )) ?? []
+                    }
+                    return (try? await connection?.list(path: virtual.string, includeHidden: false)) ?? []
+                }
+            )
+        } catch {
+            return []
         }
     }
 
@@ -790,6 +911,7 @@ final class ClientStore {
     func runTerminal(_ line: String) async {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
+        showCommandHelp = false
         if let program = AgentPrograms.programName(in: trimmed) {
             history.append(trimmed)
             historyIndex = history.count
@@ -811,6 +933,9 @@ final class ClientStore {
         if trimmed == "exit" {
             return
         }
+        if trimmed == "help" || trimmed.hasPrefix("help ") {
+            showCommandHelp = true
+        }
         let epoch = terminalEpoch
         terminalBusy = true
         defer { if epoch == terminalEpoch { terminalBusy = false } }
@@ -828,8 +953,16 @@ final class ClientStore {
             }
             guard epoch == terminalEpoch else { return }
             terminalCWD = result.cwd
-            appendOutput(result.stdout, kind: .output)
+            // Interactive catalog already shows syntax; skip the long dump on a small screen.
+            if showCommandHelp {
+                appendOutput("Tap a command below for syntax and flags. Scroll the list for every command.\n", kind: .dim)
+            } else {
+                appendOutput(result.stdout, kind: .output)
+            }
             appendOutput(result.stderr, kind: .error)
+            if mutatesFolder(trimmed), result.exit == 0 {
+                invalidateCompletionCache()
+            }
             if let action = result.action {
                 await perform(action)
             }
@@ -839,22 +972,72 @@ final class ClientStore {
         }
     }
 
-    func completeTerminalLine(_ line: String) async -> (line: String, hint: String) {
+    /// Tab completion: rewrites the line when possible and returns remaining choices for the dropdown.
+    func completeTerminalLine(_ line: String) async -> (line: String, hint: String, suggestions: [CompletionSuggestion]) {
         let request = LineCompletion.request(line: line, cwd: terminalCWD)
-        let names: [CompletionName]
-        if request.listsFiles {
-            let entries = await listFolder(request.directory, includeHidden: request.prefix.hasPrefix("."))
-            names = entries.map { CompletionName(name: $0.name, isDirectory: $0.kind == .dir) }
-        } else {
-            names = []
-        }
+        let names = await completionNames(for: request)
         let outcome = LineCompletion.complete(
             line: line,
             request: request,
             names: names,
             commands: TerminalEngine.commandNames
         )
-        return (outcome.line, outcome.hint)
+        return (outcome.line, outcome.hint, outcome.suggestions)
+    }
+
+    /// Live suggestion list for the current draft (no rewrite unless the caller applies a pick).
+    func terminalSuggestions(for line: String) async -> [CompletionSuggestion] {
+        guard shouldOfferSuggestions(for: line) else { return [] }
+        let request = LineCompletion.request(line: line, cwd: terminalCWD)
+        let names = await completionNames(for: request)
+        return LineCompletion.suggestions(
+            request: request,
+            names: names,
+            commands: TerminalEngine.commandNames
+        )
+    }
+
+    func applyTerminalSuggestion(_ suggestion: CompletionSuggestion, to line: String) -> String {
+        let request = LineCompletion.request(line: line, cwd: terminalCWD)
+        return LineCompletion.apply(line: line, request: request, suggestion: suggestion)
+    }
+
+    func applyCommandHelp(_ entry: CommandHelp) -> String {
+        showCommandHelp = false
+        return entry.insertPrefix
+    }
+
+    func dismissCommandHelp() {
+        showCommandHelp = false
+    }
+
+    func shouldOfferSuggestions(for line: String) -> Bool {
+        let request = LineCompletion.request(line: line, cwd: terminalCWD)
+        if request.listsFiles { return true }
+        return !request.prefix.isEmpty
+    }
+
+    private func completionNames(for request: CompletionRequest) async -> [CompletionName] {
+        guard request.listsFiles else { return [] }
+        let hidden = request.prefix.hasPrefix(".")
+        let key = "\(request.directory)\0\(hidden ? "1" : "0")"
+        let now = ContinuousClock.now
+        if let cached = completionListCache[key], now - cached.at < completionListTTL {
+            return cached.names
+        }
+        let entries = await listFolder(request.directory, includeHidden: hidden)
+        let names = entries.map { CompletionName(name: $0.name, isDirectory: $0.kind == .dir) }
+        completionListCache[key] = (now, names)
+        return names
+    }
+
+    func invalidateCompletionCache() {
+        completionListCache.removeAll(keepingCapacity: true)
+    }
+
+    private func mutatesFolder(_ line: String) -> Bool {
+        let first = line.split(whereSeparator: \.isWhitespace).first.map(String.init)?.lowercased() ?? ""
+        return ["mkdir", "rm", "rmdir", "mv", "cp", "touch", "put"].contains(first)
     }
 
     func interruptTerminal() {
@@ -987,7 +1170,7 @@ final class ClientStore {
                 let alive = await connection.checkAlive()
                 guard let self, !alive else { return }
                 await MainActor.run {
-                    self.handleDisconnect()
+                    self.handleDisconnect(from: connection)
                 }
             }
             return
@@ -1014,13 +1197,59 @@ final class ClientStore {
     var prompt: String { "\(hostName.isEmpty ? "mac" : hostName):\(terminalCWD) $ " }
 
     private func attach(_ session: ClientConnection) async {
+        let previous = connection
         await session.setDisconnectHandler { [weak self] in
-            Task { @MainActor in self?.handleDisconnect() }
+            Task { @MainActor in self?.handleDisconnect(from: session) }
         }
         await session.setEventHandler { [weak self] message in
             Task { @MainActor in self?.handleAgentEvent(message) }
         }
         connection = session
+        if let previous {
+            await previous.setDisconnectHandler(nil)
+            await previous.close()
+        }
+    }
+
+    private func startPathMonitor() {
+        guard !pathMonitorStarted else { return }
+        pathMonitorStarted = true
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let fingerprint = Self.pathFingerprint(path)
+            Task { @MainActor in
+                self?.pathDidChange(fingerprint)
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "app.tether.path", qos: .utility))
+    }
+
+    /// Pure; safe to call from the path-monitor queue (not MainActor).
+    private nonisolated static func pathFingerprint(_ path: NWPath) -> String {
+        let interfaces = path.availableInterfaces.map(\.name).sorted().joined(separator: ",")
+        return "\(path.status)==\(interfaces)"
+    }
+
+    private func pathDidChange(_ fingerprint: String) {
+        let previous = lastPathFingerprint
+        lastPathFingerprint = fingerprint
+        guard previous != nil, previous != fingerprint else { return }
+        guard connected, !intentionalDisconnect, !demoMode else { return }
+        if let connection {
+            Task { [weak self] in
+                let alive = await connection.checkAlive(timeout: .seconds(2))
+                guard let self, !alive else { return }
+                await MainActor.run { self.handleDisconnect(from: connection) }
+            }
+        } else if reconnecting {
+            scheduleReconnect()
+        }
+    }
+
+    private func syncPreventSleepPreference() async {
+        guard let connection else { return }
+        guard let current = try? await connection.hostPrefs() else { return }
+        preventSleepWhileActive = current
+        UserDefaults.standard.set(current, forKey: "preventSleepWhileActive")
     }
 
     private func beginAgent(line: String, program: String) {
@@ -1235,19 +1464,29 @@ final class ClientStore {
 
     private func resumeAgentIfNeeded(host: String) async {
         guard agentHostID == host, let connection, let id = agentSessionID, agentProgram != nil, !agentExited else { return }
-        do {
-            try await connection.resumeTerminal(session: id)
-            try? await connection.resizeTerminal(session: id, columns: agentColumns, rows: agentRows)
-            agentPaused = false
-            rememberAgent()
-            scheduleAgentWrite()
-        } catch {
-            agentPaused = false
-            agentExited = true
-            agentSessionID = nil
-            UserDefaults.standard.removeObject(forKey: "agent.session")
-            agentError = (error as? ProtocolFailure)?.message ?? "That session on your Mac has ended."
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                try await connection.resumeTerminal(session: id)
+                try? await connection.resizeTerminal(session: id, columns: agentColumns, rows: agentRows)
+                agentWriteFailures = 0
+                agentPaused = false
+                rememberAgent()
+                scheduleAgentWrite()
+                return
+            } catch {
+                lastError = error
+                if attempt < 2 {
+                    try? await Task.sleep(for: .milliseconds(200 * (attempt + 1)))
+                    guard self.connection === connection, !agentExited else { return }
+                }
+            }
         }
+        agentPaused = false
+        agentExited = true
+        agentSessionID = nil
+        UserDefaults.standard.removeObject(forKey: "agent.session")
+        agentError = (lastError as? ProtocolFailure)?.message ?? "That session on your Mac has ended."
     }
 
     private func enableDemo() {
@@ -1272,7 +1511,11 @@ final class ClientStore {
         feedbackTick += 1
     }
 
-    private func handleDisconnect() {
+    private func handleDisconnect(from session: ClientConnection? = nil) {
+        if let session, let current = connection, current !== session { return }
+        invalidateCompletionCache()
+        showCommandHelp = false
+        clearFileSearch()
         connection = nil
         if agentProgram != nil, !agentExited { agentPaused = true }
         guard connected, !intentionalDisconnect else { return }
@@ -1652,7 +1895,7 @@ final class ClientStore {
 }
 
 private extension ClientConnection {
-    func setDisconnectHandler(_ handler: @escaping @Sendable () -> Void) {
+    func setDisconnectHandler(_ handler: (@Sendable () -> Void)?) {
         onDisconnect = handler
     }
 }

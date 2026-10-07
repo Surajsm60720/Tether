@@ -87,6 +87,14 @@ struct SettingsView: View {
                 }
             }
             Section {
+                Toggle("Prevent Mac sleep while active", isOn: Binding(
+                    get: { store.preventSleepWhileActive },
+                    set: { store.setPreventSleepWhileActive($0) }
+                ))
+            } footer: {
+                Text("Keeps the Mac awake while this iPhone is connected or a coding agent is still running. Synced to the Mac when you are connected.")
+            }
+            Section {
                 Button("Forget all Macs", role: .destructive) { confirmForget = true }
             }
             Section {
@@ -138,6 +146,7 @@ struct SettingsView: View {
         .navigationTitle(L10n.settings)
         .onAppear {
             if store.demoMode { store.setDemo(false) }
+            store.refreshHostPrefsIfConnected()
         }
         .onChange(of: iconChoice) { _, choice in
             Task { iconError = await choice.apply() }

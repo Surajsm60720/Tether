@@ -422,13 +422,14 @@ final class TestHost: HostServing, @unchecked Sendable {
         connectedNames.append(name)
         lock.unlock()
     }
-    func disconnected(deviceId: String) {}
     func files() -> any FileProvider { filesProvider }
     func thumbnail(virtualPath: String, maxPixel: Int) async -> Data? { nil }
-    func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void) {}
-    func ignoreConnection(for deviceId: String) {}
+    func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void) -> UInt64 { 1 }
+    func ignoreConnection(for deviceId: String, generation: UInt64) {}
+    func disconnected(deviceId: String, generation: UInt64) -> Bool { true }
     func runShell(line: String, cwd: String) async -> TerminalResult? { nil }
     var terminalWrites: [Data] = []
+    var preventSleep = true
     func openTerminal(
         id: String,
         line: String,
@@ -437,9 +438,10 @@ final class TestHost: HostServing, @unchecked Sendable {
         rows: Int,
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
-    ) async throws {
+    ) async throws -> UInt64 {
         onData(Data("ready\r\n".utf8))
         onExit(0)
+        return 1
     }
     func writeTerminal(id: String, data: Data) async {
         recordWrite(data)
@@ -452,10 +454,12 @@ final class TestHost: HostServing, @unchecked Sendable {
     }
     func resizeTerminal(id: String, columns: Int, rows: Int) async {}
     func closeTerminal(id: String) async {}
-    func suspendTerminal(id: String) async {}
-    func resumeTerminal(id: String, onData: @escaping @Sendable (Data) -> Void, onExit: @escaping @Sendable (Int32) -> Void) async -> Bool {
-        false
+    func suspendTerminal(id: String, generation: UInt64) async {}
+    func resumeTerminal(id: String, onData: @escaping @Sendable (Data) -> Void, onExit: @escaping @Sendable (Int32) -> Void) async -> UInt64? {
+        nil
     }
+    func preventSleepWhileActive() -> Bool { preventSleep }
+    func setPreventSleepWhileActive(_ value: Bool) { preventSleep = value }
 }
 
 @Test func remoteAddressAndSetupRoundTrip() throws {

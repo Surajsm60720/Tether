@@ -34,6 +34,8 @@ public enum Op {
     public static let pairComplete = "pair.complete"
     public static let clientHello = "client.hello"
     public static let hostHello = "host.hello"
+    /// Read or write host preferences the phone can mirror (for example prevent-sleep).
+    public static let prefs = "prefs"
 }
 
 public enum ErrorCode: String, Codable, Sendable, Equatable {
@@ -235,6 +237,8 @@ public struct Header: Codable, Sendable, Equatable {
     public var session: String?
     public var columns: Int?
     public var rows: Int?
+    /// When set on a prefs request, updates the Mac. Always returned on a prefs response.
+    public var preventSleep: Bool?
 
     public init() {}
 }

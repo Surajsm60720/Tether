@@ -14,9 +14,18 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "2.1"
+    public static let current = "2.2"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "2.2", items: [
+            "Prevent sleep while active: the Mac stays awake during a connected session or live agent, so remote work is not cut off. Toggle it in Settings on the Mac and the iPhone.",
+            "Remote and hotspot reconnects no longer detach a live agent when the old socket closes after the new one resumes.",
+            "Typing and dictation stay responsive over other networks: keystrokes are sent without waiting for each ACK.",
+            "After a network switch, the phone probes the path sooner and restores the terminal keyboard when the agent comes back.",
+            "Terminal suggestions: tap a command or path from a scrollable dropdown while typing; Tab still fills a unique match or opens the same list. help opens a catalog with typed syntax and flags.",
+            "Files search finds names across every shared folder (live walk from the Mac, not a local index); tap a hit to open the file or go to that folder.",
+            "Settings is in the Mac window sidebar (gear) and opens the full Settings window, same as ⌘, or the menu bar.",
+        ]),
         ReleaseNotes(version: "2.1", items: [
             "Leave a live agent for Files or Transfers without ending it; Terminal shows a Live badge until you close with X.",
             "While the agent fills the Terminal tab, the tab bar hides so the PTY and key row use the full bottom edge.",

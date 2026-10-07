@@ -107,44 +107,7 @@ public struct TerminalEngine: Sendable {
     ] + AgentPrograms.completionNames
 
     private func help(cwd: VirtualPath) -> TerminalResult {
-        let text = """
-        help                 show this list
-        pwd                  print the working folder
-        cd <dir>             change folder (~ is /)
-        ls [-l] [-a] [path]  list a folder
-        cat <file>           print a text file (up to 1 MB)
-        head -n N <file>     first lines
-        tail -n N <file>     last lines
-        stat <path>          details
-        du [-h] [path]       size summary
-        find <name> [path]   search by name
-        tree [-L N] [path]   folder tree
-        mkdir [-p] <dir>     create a folder
-        rm [-r] <path>       remove a file or folder
-        cp <from> <to>       copy inside a shared folder
-        mv <from> <to>       move or rename
-        touch <file>         create an empty file
-        echo <text>          print text
-        grep <text> <file>   search a text file
-        wc <file>            line, word, and byte counts
-        date                 current time
-        whoami               Mac account and this iPhone
-        status               host, folder, and uptime
-        fetch                Mac summary (neofetch, fastfetch)
-        htop                 live CPU and memory (btop, monitor)
-        open <file>          preview on this iPhone
-        get <file>           download to this iPhone
-        put                  upload into this folder
-        clear                clear the screen
-        exit                 leave the terminal
-        claude               Claude Code, live on this iPhone
-        agent                Cursor's agent (cursor and codex too)
-
-        Other Mac commands, including pipes, run on your Mac.
-        claude, agent, and codex open the real program, with this iPhone as the screen.
-
-        """
-        return TerminalResult(stdout: text, cwd: cwd.string)
+        TerminalResult(stdout: CommandCatalog.printedHelp(), cwd: cwd.string)
     }
 
     private func whoami(cwd: VirtualPath, context: TerminalContext?) -> TerminalResult {
@@ -296,12 +259,18 @@ public struct TerminalEngine: Sendable {
         guard let pattern = args.first else { return fail("find: missing name", cwd: cwd) }
         let rootArg = args.dropFirst().first ?? cwd.string
         guard let root = try? VirtualPath.resolve(rootArg, from: cwd) else { return fail("find: invalid path", cwd: cwd) }
-        var matches: [String] = []
-        var visited = 0
-        let started = Date()
         do {
-            try await walkFind(path: root, pattern: pattern, files: files, depth: 0, matches: &matches, visited: &visited, started: started)
-            let text = matches.isEmpty ? "" : matches.joined(separator: "\n") + "\n"
+            let provider = files
+            let hits = try await FileSearch.find(
+                pattern: pattern,
+                root: root,
+                match: .wildcard,
+                includeDirectories: false,
+                list: { path in
+                    try await provider.list(path: path, offset: 0, limit: 5000, includeHidden: false)
+                }
+            )
+            let text = hits.isEmpty ? "" : hits.map(\.path).joined(separator: "\n") + "\n"
             return TerminalResult(stdout: text, cwd: cwd.string)
         } catch {
             return fail("find: \(message(error))", cwd: cwd)
@@ -395,20 +364,6 @@ public struct TerminalEngine: Sendable {
         return total
     }
 
-    private func walkFind(path: VirtualPath, pattern: String, files: any FileProvider, depth: Int, matches: inout [String], visited: inout Int, started: Date) async throws {
-        if matches.count >= 500 || depth > 12 || visited > 8000 || Date().timeIntervalSince(started) > 8 { return }
-        visited += 1
-        let entry = try await files.stat(path: path)
-        if entry.kind != .dir, wildcard(pattern, matches: entry.name) {
-            matches.append(path.string)
-        }
-        guard entry.kind == .dir else { return }
-        let children = try await files.list(path: path, offset: 0, limit: 5000, includeHidden: false)
-        for child in children {
-            try await walkFind(path: path.appending(child.name), pattern: pattern, files: files, depth: depth + 1, matches: &matches, visited: &visited, started: started)
-        }
-    }
-
     private func walkTree(path: VirtualPath, files: any FileProvider, prefix: String, depth: Int, limit: Int, lines: inout [String]) async throws {
         guard depth < limit, lines.count < 2000 else { return }
         let children = try await files.list(path: path, offset: 0, limit: 1000, includeHidden: false)
@@ -422,13 +377,6 @@ public struct TerminalEngine: Sendable {
                 try await walkTree(path: path.appending(child.name), files: files, prefix: next, depth: depth + 1, limit: limit, lines: &lines)
             }
         }
-    }
-
-    private func wildcard(_ pattern: String, matches name: String) -> Bool {
-        let expression = "^" + NSRegularExpression.escapedPattern(for: pattern)
-            .replacingOccurrences(of: "\\*", with: ".*")
-            .replacingOccurrences(of: "\\?", with: ".") + "$"
-        return name.range(of: expression, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     private func makeDirectory(_ args: [String], cwd: VirtualPath, files: any FileProvider) async -> TerminalResult {

@@ -7,11 +7,10 @@ struct SettingsView: View {
     @Bindable var store: HostStore
     @State private var filter = ""
     @State private var pendingRevoke: DeviceItem?
-    @State private var nameDraft = ""
 
     var body: some View {
         TabView {
-            general
+            HostGeneralSettings(store: store)
                 .tabItem { Label(L10n.general, systemImage: "gear") }
             folders
                 .tabItem { Label(L10n.folders, systemImage: "folder") }
@@ -21,7 +20,7 @@ struct SettingsView: View {
                 .tabItem { Label("Other networks", systemImage: "globe") }
             activity
                 .tabItem { Label(L10n.activity, systemImage: "list.bullet") }
-            changes
+            HostWhatsNew()
                 .tabItem { Label("What's new", systemImage: "sparkles") }
         }
         .frame(width: 560, height: 480)
@@ -39,48 +38,6 @@ struct SettingsView: View {
                 pendingRevoke = nil
             }
         }
-    }
-
-    private var general: some View {
-        Form {
-            TextField(L10n.macName, text: $nameDraft)
-                .onSubmit { store.setName(nameDraft) }
-            HStack {
-                Button("Save name") { store.setName(nameDraft) }
-                Button("Random name") {
-                    let generated = FriendlyName.make()
-                    nameDraft = generated
-                    store.setName(generated)
-                }
-            }
-            Toggle(L10n.launchAtLogin, isOn: Binding(
-                get: { store.launchAtLogin },
-                set: { store.setLaunchAtLogin($0) }
-            ))
-            Toggle(L10n.requireApproval, isOn: Binding(
-                get: { store.requireApproval },
-                set: { store.setRequireApproval($0) }
-            ))
-            Toggle("Sharing", isOn: Binding(
-                get: { store.sharingEnabled },
-                set: { store.setSharing($0) }
-            ))
-            Picker("Icon", selection: Binding(
-                get: { AppIconChoice.current },
-                set: { $0.save() }
-            )) {
-                ForEach(AppIconChoice.allCases) { choice in
-                    Text(choice.title).tag(choice)
-                }
-            }
-            Text("Light and Dark follow the Mac’s appearance while Tether is open.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            LabeledContent("Version", value: AppVersion.marketing)
-        }
-        .formStyle(.grouped)
-        .onAppear { nameDraft = store.macName }
-        .onChange(of: store.macName) { _, name in nameDraft = name }
     }
 
     private var folders: some View {
@@ -131,18 +88,6 @@ struct SettingsView: View {
         }
     }
 
-    private var changes: some View {
-        List {
-            ForEach(AppChangelog.releases) { release in
-                Section(release.version) {
-                    ForEach(release.items, id: \.self) { item in
-                        Text(item)
-                    }
-                }
-            }
-        }
-    }
-
     private var activity: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -164,6 +109,85 @@ struct SettingsView: View {
     private var filtered: [ActivityEvent] {
         guard !filter.isEmpty else { return store.activity }
         return store.activity.filter { $0.text.localizedCaseInsensitiveContains(filter) }
+    }
+}
+
+/// General tab content for the Settings window (also used by the Settings scene).
+struct HostGeneralSettings: View {
+    @Bindable var store: HostStore
+    @State private var nameDraft = ""
+
+    var body: some View {
+        Form {
+            Section {
+                TextField(L10n.macName, text: $nameDraft)
+                    .onSubmit { store.setName(nameDraft) }
+                HStack {
+                    Button("Save name") { store.setName(nameDraft) }
+                    Button("Random name") {
+                        let generated = FriendlyName.make()
+                        nameDraft = generated
+                        store.setName(generated)
+                    }
+                }
+            } footer: {
+                Text("The iPhone uses this name to tell your Mac apart.")
+            }
+            Section {
+                Toggle(L10n.launchAtLogin, isOn: Binding(
+                    get: { store.launchAtLogin },
+                    set: { store.setLaunchAtLogin($0) }
+                ))
+                Toggle(L10n.requireApproval, isOn: Binding(
+                    get: { store.requireApproval },
+                    set: { store.setRequireApproval($0) }
+                ))
+                Toggle(L10n.preventSleep, isOn: Binding(
+                    get: { store.preventSleepWhileActive },
+                    set: { store.setPreventSleepWhileActive($0) }
+                ))
+                Text(L10n.preventSleepHelp)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Toggle("Sharing", isOn: Binding(
+                    get: { store.sharingEnabled },
+                    set: { store.setSharing($0) }
+                ))
+            }
+            Section {
+                Picker("Icon", selection: Binding(
+                    get: { AppIconChoice.current },
+                    set: { $0.save() }
+                )) {
+                    ForEach(AppIconChoice.allCases) { choice in
+                        Text(choice.title).tag(choice)
+                    }
+                }
+                Text("Light and Dark follow the Mac’s appearance while Tether is open.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                LabeledContent("Version", value: AppVersion.marketing)
+            } header: {
+                Text("Appearance")
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { nameDraft = store.macName }
+        .onChange(of: store.macName) { _, name in nameDraft = name }
+    }
+}
+
+struct HostWhatsNew: View {
+    var body: some View {
+        List {
+            ForEach(AppChangelog.releases) { release in
+                Section(release.version) {
+                    ForEach(release.items, id: \.self) { item in
+                        Text(item)
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -50,6 +50,8 @@ enum RuntimeEvent: Sendable {
     case disconnected(id: String)
     case offerConsumed
     case approval(String)
+    case activityChanged
+    case preventSleepChanged(Bool)
 }
 
 @MainActor
@@ -62,6 +64,7 @@ final class HostStore {
     var macName: String
     var sharingEnabled: Bool
     var requireApproval: Bool
+    var preventSleepWhileActive: Bool
     var launchAtLogin: Bool
     var offer: PairingOffer?
     var pairingMessage: String = L10n.pairWaiting
@@ -78,6 +81,7 @@ final class HostStore {
     private let context: ModelContext
     private let runtime: HostRuntime
     private let listener = TetherListener()
+    private let sleepGuard = SleepGuard()
     private var started = false
     private var relayTask: Task<Void, Never>?
     private var relayStream: NWByteStream?
@@ -90,6 +94,7 @@ final class HostStore {
         macName = name
         sharingEnabled = defaults.object(forKey: "sharingEnabled") as? Bool ?? true
         requireApproval = defaults.bool(forKey: "requireApproval")
+        preventSleepWhileActive = defaults.object(forKey: "preventSleepWhileActive") as? Bool ?? true
         launchAtLogin = SMAppService.mainApp.status == .enabled
         remoteEnabled = defaults.bool(forKey: "remoteEnabled")
         reachableAddress = defaults.string(forKey: "reachableAddress") ?? ""
@@ -108,12 +113,14 @@ final class HostStore {
         HostStore.shared = self
         reload()
         runtime.setRequireApproval(requireApproval)
+        runtime.setPreventSleepWhileActive(preventSleepWhileActive)
         if sharingEnabled {
             startListening(peerToPeer: true)
         } else {
             networkLine = L10n.sharingPaused
         }
         startPhoneBrowser()
+        refreshSleep()
     }
 
     var nearbyPhones: [DiscoveredHost] = []
@@ -308,6 +315,22 @@ final class HostStore {
         requireApproval = value
         UserDefaults.standard.set(value, forKey: "requireApproval")
         runtime.setRequireApproval(value)
+    }
+
+    func setPreventSleepWhileActive(_ value: Bool) {
+        preventSleepWhileActive = value
+        UserDefaults.standard.set(value, forKey: "preventSleepWhileActive")
+        runtime.setPreventSleepWhileActive(value)
+        refreshSleep()
+    }
+
+    func refreshSleep() {
+        let want = SleepPolicy.shouldStayAwake(
+            enabled: preventSleepWhileActive,
+            connectedDevices: connected.count,
+            liveAgents: runtime.liveAgentCount()
+        )
+        sleepGuard.setActive(want)
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -621,12 +644,20 @@ final class HostStore {
                 connected.append(LiveDevice(id: id, name: name, since: Date()))
             }
             touch(id)
+            refreshSleep()
         case let .disconnected(id):
             connected.removeAll { $0.id == id }
+            refreshSleep()
         case .offerConsumed:
             offer = nil
         case let .approval(name):
             pairingMessage = L10n.wantsToConnect(name)
+        case .activityChanged:
+            refreshSleep()
+        case let .preventSleepChanged(value):
+            preventSleepWhileActive = value
+            UserDefaults.standard.set(value, forKey: "preventSleepWhileActive")
+            refreshSleep()
         }
     }
 
@@ -674,11 +705,13 @@ final class HostRuntime: HostServing, @unchecked Sendable {
     private var offer: PairingOffer?
     private var keys: [String: SymmetricKey] = [:]
     private var revoked: Set<String> = []
-    private var closers: [String: @Sendable () -> Void] = [:]
+    private var closers: [String: (generation: UInt64, close: @Sendable () -> Void)] = [:]
+    private var connectionGeneration: [String: UInt64] = [:]
     /// Reads a pairing key from disk when it is not in memory yet. Used after a relaunch.
     var restoreKey: (@Sendable (String) -> Data?)?
     private var macName: String
     private var requireApproval = false
+    private var preventSleep = true
     private let provider = DiskFileProvider()
     private var agents: [String: LiveAgent] = [:]
     var onEvent: (@Sendable (RuntimeEvent) -> Void)?
@@ -687,6 +720,8 @@ final class HostRuntime: HostServing, @unchecked Sendable {
         self.hostId = hostId
         self.macName = macName
     }
+
+    func liveAgentCount() -> Int { sync { agents.count } }
 
     func hostName() -> String { sync { macName } }
     func currentOffer() -> PairingOffer? { sync { offer } }
@@ -744,7 +779,13 @@ final class HostRuntime: HostServing, @unchecked Sendable {
 
     func note(_ event: String) { onEvent?(.log(event)) }
     func connected(deviceId: String, name: String) { onEvent?(.connected(id: deviceId, name: name)) }
-    func disconnected(deviceId: String) { onEvent?(.disconnected(id: deviceId)) }
+    @discardableResult
+    func disconnected(deviceId: String, generation: UInt64) -> Bool {
+        let current = sync { connectionGeneration[deviceId] }
+        guard current == generation else { return false }
+        onEvent?(.disconnected(id: deviceId))
+        return true
+    }
     func files() -> any FileProvider { provider }
 
     func runShell(line: String, cwd: String) async -> TerminalResult? {
@@ -774,16 +815,32 @@ final class HostRuntime: HostServing, @unchecked Sendable {
         return jpeg.count <= 256 * 1024 ? jpeg : nil
     }
 
-    func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void) {
-        sync { closers[deviceId] = close }
+    func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void) -> UInt64 {
+        let (previous, generation): ((@Sendable () -> Void)?, UInt64) = sync {
+            let next = (connectionGeneration[deviceId] ?? 0) + 1
+            connectionGeneration[deviceId] = next
+            let previous = closers[deviceId]?.close
+            closers[deviceId] = (next, close)
+            return (previous, next)
+        }
+        previous?()
+        return generation
     }
 
-    func ignoreConnection(for deviceId: String) {
-        sync { closers[deviceId] = nil }
+    func ignoreConnection(for deviceId: String, generation: UInt64) {
+        sync {
+            guard closers[deviceId]?.generation == generation else { return }
+            closers[deviceId] = nil
+        }
     }
 
     func setMacName(_ name: String) { sync { macName = name } }
     func setRequireApproval(_ value: Bool) { sync { requireApproval = value } }
+    func setPreventSleepWhileActive(_ value: Bool) {
+        sync { preventSleep = value }
+        onEvent?(.preventSleepChanged(value))
+    }
+    func preventSleepWhileActive() -> Bool { sync { preventSleep } }
     func setOffer(_ offer: PairingOffer?) { sync { self.offer = offer } }
     func setShares(_ shares: [MountedShare]) { provider.setShares(shares) }
     func setKeys(_ keys: [String: SymmetricKey]) {
@@ -800,19 +857,19 @@ final class HostRuntime: HostServing, @unchecked Sendable {
         let close: (@Sendable () -> Void)? = sync {
             revoked.insert(deviceId)
             keys[deviceId] = nil
-            return closers[deviceId]
+            return closers[deviceId]?.close
         }
         close?()
     }
 
     func disconnect(_ deviceId: String) {
-        let close: (@Sendable () -> Void)? = sync { closers[deviceId] }
+        let close: (@Sendable () -> Void)? = sync { closers[deviceId]?.close }
         close?()
     }
 
     func disconnectAll() {
         let all: [@Sendable () -> Void] = sync {
-            let values = Array(closers.values)
+            let values = closers.values.map(\.close)
             closers.removeAll()
             return values
         }
@@ -827,12 +884,12 @@ final class HostRuntime: HostServing, @unchecked Sendable {
         rows: Int,
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
-    ) async throws {
+    ) async throws -> UInt64 {
         let directory = try workingDirectory(cwd)
         let scoped = directory.startAccessingSecurityScopedResource()
         let script = AgentPrograms.shellScript(line: line, directory: directory.path)
         let bridge = TerminalBridge()
-        bridge.resume(onData: onData, onExit: { [weak self] code in
+        let generation = bridge.resume(onData: onData, onExit: { [weak self] code in
             onExit(code)
             self?.releaseAgent(id)
         })
@@ -859,24 +916,25 @@ final class HostRuntime: HostServing, @unchecked Sendable {
             agent.session.terminate()
             releaseAgent(agent.session.id)
         }
+        onEvent?(.activityChanged)
+        return generation
     }
 
-    func suspendTerminal(id: String) async {
-        sync { agents[id]?.bridge.suspend() }
+    func suspendTerminal(id: String, generation: UInt64) async {
+        sync { agents[id]?.bridge.suspend(generation: generation) }
     }
 
     func resumeTerminal(
         id: String,
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
-    ) async -> Bool {
+    ) async -> UInt64? {
         let bridge = sync { agents[id]?.bridge }
-        guard let bridge else { return false }
-        bridge.resume(onData: onData, onExit: { [weak self] code in
+        guard let bridge else { return nil }
+        return bridge.resume(onData: onData, onExit: { [weak self] code in
             onExit(code)
             self?.releaseAgent(id)
         })
-        return true
     }
 
     func writeTerminal(id: String, data: Data) async {
@@ -894,6 +952,7 @@ final class HostRuntime: HostServing, @unchecked Sendable {
     private func releaseAgent(_ id: String) {
         let live = sync { agents.removeValue(forKey: id) }
         if live?.scoped == true { live?.folder.stopAccessingSecurityScopedResource() }
+        onEvent?(.activityChanged)
     }
 
     private func workingDirectory(_ cwd: String) throws -> URL {

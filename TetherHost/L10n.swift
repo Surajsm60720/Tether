@@ -26,6 +26,13 @@ enum L10n {
     static var macName: String { text("settings.macName", "Mac name") }
     static var launchAtLogin: String { text("settings.login", "Launch at login") }
     static var requireApproval: String { text("settings.approval", "Require approval each session") }
+    static var preventSleep: String { text("settings.preventSleep", "Prevent sleep while active") }
+    static var preventSleepHelp: String {
+        text(
+            "settings.preventSleep.help",
+            "Keeps this Mac awake while an iPhone is connected or a coding agent is still running, so remote sessions are not cut off."
+        )
+    }
     static var revoke: String { text("settings.revoke", "Revoke") }
     static var clear: String { text("settings.clear", "Clear") }
     static var staleBookmark: String { text("host.stale", "A shared folder needs to be chosen again.") }

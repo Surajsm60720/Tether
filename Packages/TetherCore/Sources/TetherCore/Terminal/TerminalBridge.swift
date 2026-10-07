@@ -9,6 +9,7 @@ public final class TerminalBridge: @unchecked Sendable {
     private var onExit: (@Sendable (Int32) -> Void)?
     private var pending = Data()
     private var exitCode: Int32?
+    private var generation: UInt64 = 0
     private let cap: Int
 
     public init(cap: Int = 2 * 1024 * 1024) {
@@ -48,17 +49,25 @@ public final class TerminalBridge: @unchecked Sendable {
         }
     }
 
-    /// Drops the current listener. The process keeps running and further output is saved.
-    public func suspend() {
+    /// Drops the listener for this generation only. A newer resume is left alone.
+    public func suspend(generation expected: UInt64) {
         lock.lock()
+        guard expected == generation else {
+            lock.unlock()
+            return
+        }
         onData = nil
         onExit = nil
         lock.unlock()
     }
 
     /// Attaches a listener. Saved output is delivered before anything newer, then an exit if the process already ended.
-    public func resume(onData: @escaping @Sendable (Data) -> Void, onExit: @escaping @Sendable (Int32) -> Void) {
+    /// Returns a generation token the owner must pass to `suspend(generation:)`.
+    @discardableResult
+    public func resume(onData: @escaping @Sendable (Data) -> Void, onExit: @escaping @Sendable (Int32) -> Void) -> UInt64 {
         lock.lock()
+        generation += 1
+        let gen = generation
         let buffered = pending
         let code = exitCode
         pending.removeAll(keepingCapacity: true)
@@ -69,5 +78,6 @@ public final class TerminalBridge: @unchecked Sendable {
             if !buffered.isEmpty { onData(buffered) }
             if let code { onExit(code) }
         }
+        return gen
     }
 }

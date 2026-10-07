@@ -83,7 +83,9 @@ struct FilesView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if store.loading && store.entries.isEmpty {
+                if store.isFileSearching {
+                    searchResults
+                } else if store.loading && store.entries.isEmpty {
                     skeleton
                 } else if store.sortedEntries.isEmpty {
                     ContentUnavailableView(L10n.filesEmpty, systemImage: "folder")
@@ -95,9 +97,16 @@ struct FilesView: View {
             }
             .animation(TetherMotion.fade(reduceMotion), value: store.path)
             .animation(TetherMotion.fade(reduceMotion), value: store.grid)
+            .animation(TetherMotion.fade(reduceMotion), value: store.isFileSearching)
             .navigationTitle(store.folderTitle)
             .navigationBarTitleDisplayMode(store.path == "/" ? .large : .inline)
-            .searchable(text: $store.searchText, prompt: "Filter")
+            .searchable(
+                text: Binding(
+                    get: { store.searchText },
+                    set: { store.updateFileSearch($0) }
+                ),
+                prompt: "Search files"
+            )
             .toolbar { toolbar }
             .refreshable { try? await store.refresh() }
         }
@@ -165,6 +174,68 @@ struct FilesView: View {
     private var listing: some View {
         List(store.sortedEntries) { entry in
             FileRow(store: store, entry: entry)
+        }
+    }
+
+    private var searchResults: some View {
+        Group {
+            if store.fileSearchRunning && store.fileSearchHits.isEmpty {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Searching shared folders…")
+                        .font(TetherType.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if store.fileSearchHits.isEmpty {
+                ContentUnavailableView.search(text: store.searchText)
+            } else {
+                List {
+                    Section {
+                        ForEach(store.fileSearchHits) { hit in
+                            Button {
+                                Task { await store.openSearchHit(hit) }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: hit.entry.kind == .dir ? "folder.fill" : "doc")
+                                        .font(.title3)
+                                        .foregroundStyle(hit.entry.kind == .dir ? Color.tether.accent : Color.secondary)
+                                        .frame(width: 28)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(hit.entry.name)
+                                            .font(TetherType.body)
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Text(hit.path)
+                                            .font(TetherType.footnote)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                    Spacer(minLength: 0)
+                                    if hit.entry.kind != .dir {
+                                        Text(Format.bytes(hit.entry.size))
+                                            .font(TetherType.footnote)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(hit.entry.name), \(hit.path)")
+                        }
+                    } header: {
+                        HStack {
+                            Text(store.fileSearchHits.count == 1
+                                 ? "1 match across shares"
+                                 : "\(store.fileSearchHits.count) matches across shares")
+                            if store.fileSearchRunning {
+                                ProgressView()
+                                    .controlSize(.mini)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

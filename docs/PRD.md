@@ -99,7 +99,7 @@ Key scenarios:
 | **M1** | Polished GUI (grid and list, breadcrumbs, thumbnails, sort), uploads, transfers sheet with progress |
 | **M2** | Virtual terminal |
 | **M3** | Settings, device management and revoke, error states, demo mode, polish |
-| **Stretch** | Streaming video through `AVAssetResourceLoader`, iOS Share Extension ("Send to Mac"), filename search, Save to Photos, rename/delete/mkdir with confirmations |
+| **Stretch** | Streaming video through `AVAssetResourceLoader`, iOS Share Extension ("Send to Mac"), Save to Photos, rename/delete/mkdir with confirmations |
 | **Later** | Windows host, Android client (the wire protocol is documented so it is portable) |
 
 ---
@@ -282,7 +282,7 @@ Menu bar app (`LSUIElement = true`, no Dock icon by default). Built with SwiftUI
 - **Activity log:** last 100 events (connect, list, read, write, denied) with timestamps. Filenames shown in the log are stored in memory only and cleared on quit.
 - **Settings:** Mac display name, launch at login (`SMAppService.mainApp`), paired devices list with *Revoke*, *Require approval each session*, *Stop sharing* master switch.
 - **Thumbnails:** `QLThumbnailGenerator` with an in-memory LRU cache (100 items).
-- **Power:** hold a `ProcessInfo.beginActivity` assertion only while transfers are active so the Mac does not sleep mid-transfer.
+- **Power:** when *Prevent sleep while active* is on (default), hold a `ProcessInfo.beginActivity` assertion while an iPhone is connected or a coding agent is still running so the Mac does not sleep mid-session.
 
 ### 11.4 Acceptance criteria (Host)
 - Starts listening on launch if at least one share exists; advertises via Bonjour (verify with `dns-sd -B _tether._tcp`).
@@ -301,7 +301,7 @@ SwiftUI app, portrait-first, supports landscape and iPad via adaptive layout. Ro
 1. **Welcome / permission primer:** explains Local Network access before the system prompt (copy in `DESIGN.md`).
 2. **Hosts:** discovered Macs (live), paired Macs (with connection state), *Pair new Mac* button. Swipe to forget a Mac.
 3. **Pair:** camera QR scanner plus *Enter code instead*. States: scanning, connecting, waiting for approval on Mac, success, failed.
-4. **Files:** navigation stack of folders. List and grid toggle, breadcrumb title menu (jump to any ancestor), sort (name, date, size, kind), pull to refresh, folder-local filename filter, thumbnails in grid mode, context menu (Download, Preview, Share, Get Info).
+4. **Files:** navigation stack of folders. List and grid toggle, breadcrumb title menu (jump to any ancestor), sort (name, date, size, kind), pull to refresh, global filename search across shares (live walk, same caps as terminal `find`), thumbnails in grid mode, context menu (Download, Preview, Share, Get Info).
 5. **Preview:** download to a cache, then present `QLPreviewController`. Show progress for larger files with a cancel button. Provide a Share button (system share sheet) and *Save to Files*.
 6. **Upload:** `PhotosPicker` and `fileImporter`. Destination is the current folder if writable, otherwise a prompt to choose a writable share.
 7. **Transfers:** active and recent transfers, progress rings, speed and ETA, retry on failure, clear completed.
@@ -335,15 +335,17 @@ The terminal looks like a shell but is a **command interpreter implemented in `T
 
 ### 13.2 Client UI behavior
 - Prompt: `mac-name:/Share/dir $` with the path in the directory color (see `DESIGN.md`).
-- Scrollback of 2,000 lines, text selection and copy, command history (up/down via on-screen keys and hardware keyboard), Tab completion for paths and commands, `Ctrl-C` cancels a running command, `Ctrl-L` clears.
-- Accessory key row above the software keyboard: keyboard show/hide, `Tab`, `Esc`, `Ctrl`, `↑`, `↓`, `/`, `~`, `-`, `|`. Hiding the keyboard returns that space to the transcript.
+- Scrollback of 2,000 lines, text selection and copy, command history (up/down via on-screen keys and hardware keyboard), Tab completion for paths and commands, live suggestion dropdown for the same matches (tap to insert), `Ctrl-C` cancels a running command, `Ctrl-L` clears.
+- Suggestions list the folder named by the path head on demand from the Host (short phone-side TTL cache); there is no background full-tree index. New files and folders appear on the next suggestion fetch for that directory.
+- `help` opens a scrollable tappable catalog that shows each command’s typed syntax (flags and placeholders) and inserts a starter line (for example `get ` or `cd `). The scrollback gets a short tip instead of dumping the full list again. Path and command suggestions use the same scrollable menu height.
+- Accessory key row above the software keyboard: keyboard show/hide, `Tab`, `Esc`, `Ctrl`, `↑`, `↓`, `/`, `~`, `-`, `|`. Hiding the keyboard returns that space to the transcript. Esc dismisses the suggestion or help menu first.
 - Output of `open` and `preview` presents the QuickLook sheet over the terminal.
 
 ### 13.3 Commands (v1)
 
 | Command | Behavior |
 |---|---|
-| `help` | List commands |
+| `help` | List commands (also opens a tappable catalog on the phone) |
 | `pwd`, `cd <dir>`, `cd ..`, `cd /` | Navigation (`~` maps to `/`) |
 | `ls [-l] [-a] [path]` | List; `-l` shows size, date, kind; `-a` shows dotfiles (hidden by default) |
 | `cat <file>` | Print text files up to 1 MB |
@@ -472,7 +474,7 @@ Time estimates assume focused work. M0 is sized for the meetup.
 - Settings, device revoke, error and offline states, reconnect logic, demo mode, accessibility pass, app icon, README with screenshots.
 
 ### Stretch
-Streaming video, Share Extension, filename search, rename/delete/mkdir, Save to Photos.
+Streaming video, Share Extension, rename/delete/mkdir, Save to Photos.
 
 ---
 

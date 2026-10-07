@@ -42,10 +42,24 @@ struct HostWindow: View {
 
     var body: some View {
         NavigationSplitView {
-            List(HostPage.allCases, selection: $page) { item in
-                Label(item.title, systemImage: item.symbol)
-                    .symbolRenderingMode(.hierarchical)
-                    .tag(item)
+            List(selection: $page) {
+                Section {
+                    ForEach(HostPage.allCases) { item in
+                        Label(item.title, systemImage: item.symbol)
+                            .symbolRenderingMode(.hierarchical)
+                            .tag(item)
+                    }
+                }
+                Section {
+                    // Opens the full Settings window (same as ⌘, / menu bar Settings…).
+                    SettingsLink {
+                        Label("Settings", systemImage: "gearshape")
+                            .symbolRenderingMode(.hierarchical)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 196, ideal: 220)

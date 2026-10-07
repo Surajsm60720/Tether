@@ -283,19 +283,24 @@ import Testing
 }
 
 @Test func v1E2E_changelogListsEveryShippedVersion() throws {
-    #expect(AppChangelog.current == "2.1")
+    #expect(AppChangelog.current == "2.2")
     let versions = Set(AppChangelog.releases.map(\.version))
     #expect(versions.contains("1.0"))
     #expect(versions.contains("1.1"))
     #expect(versions.contains("1.2"))
     #expect(versions.contains("2.0"))
     #expect(versions.contains("2.1"))
+    #expect(versions.contains("2.2"))
     let v1 = try #require(AppChangelog.releases.first { $0.version == "1.0" })
     #expect(v1.items.count >= 8)
     let v2 = try #require(AppChangelog.releases.first { $0.version == "2.0" })
     #expect(v2.items.contains(where: { $0.localizedCaseInsensitiveContains("agent") }))
     let v21 = try #require(AppChangelog.releases.first { $0.version == "2.1" })
     #expect(v21.items.contains(where: { $0.localizedCaseInsensitiveContains("keyboard") }))
+    let v22 = try #require(AppChangelog.releases.first { $0.version == "2.2" })
+    #expect(v22.items.contains(where: { $0.localizedCaseInsensitiveContains("sleep") }))
+    #expect(v22.items.contains(where: { $0.localizedCaseInsensitiveContains("suggest") }))
+    #expect(v22.items.contains(where: { $0.localizedCaseInsensitiveContains("Files search") || $0.localizedCaseInsensitiveContains("across every shared") }))
 }
 
 @Test func v1E2E_terminalCommandSurfaceMatchesHelp() async {
@@ -363,11 +368,11 @@ private final class E2EHost: HostServing, @unchecked Sendable {
     func decide(_ request: ApprovalRequest) async -> Bool { true }
     func note(_ event: String) {}
     func connected(deviceId: String, name: String) {}
-    func disconnected(deviceId: String) {}
     func files() -> any FileProvider { filesProvider }
     func thumbnail(virtualPath: String, maxPixel: Int) async -> Data? { nil }
-    func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void) {}
-    func ignoreConnection(for deviceId: String) {}
+    func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void) -> UInt64 { 1 }
+    func ignoreConnection(for deviceId: String, generation: UInt64) {}
+    func disconnected(deviceId: String, generation: UInt64) -> Bool { true }
     func runShell(line: String, cwd: String) async -> TerminalResult? { nil }
 
     func openTerminal(
@@ -378,17 +383,20 @@ private final class E2EHost: HostServing, @unchecked Sendable {
         rows: Int,
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
-    ) async throws {
+    ) async throws -> UInt64 {
         onData(Data("ready\r\n".utf8))
         onExit(0)
+        return 1
     }
     func writeTerminal(id: String, data: Data) async {}
     func resizeTerminal(id: String, columns: Int, rows: Int) async {}
     func closeTerminal(id: String) async {}
-    func suspendTerminal(id: String) async {}
+    func suspendTerminal(id: String, generation: UInt64) async {}
     func resumeTerminal(
         id: String,
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
-    ) async -> Bool { false }
+    ) async -> UInt64? { nil }
+    func preventSleepWhileActive() -> Bool { true }
+    func setPreventSleepWhileActive(_ value: Bool) {}
 }

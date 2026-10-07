@@ -11,6 +11,28 @@ public struct CompletionName: Equatable, Sendable {
     }
 }
 
+public enum CompletionKind: String, Equatable, Sendable {
+    case command
+    case file
+    case folder
+}
+
+/// One row in the suggestion dropdown.
+public struct CompletionSuggestion: Equatable, Sendable, Identifiable {
+    public var id: String { "\(kind.rawValue):\(display)" }
+    public var display: String
+    public var insert: String
+    public var isDirectory: Bool
+    public var kind: CompletionKind
+
+    public init(display: String, insert: String, isDirectory: Bool, kind: CompletionKind) {
+        self.display = display
+        self.insert = insert
+        self.isDirectory = isDirectory
+        self.kind = kind
+    }
+}
+
 /// The token under Tab, and the folder that has to be listed before a name can be chosen.
 public struct CompletionRequest: Equatable, Sendable {
     public var start: Int
@@ -29,6 +51,14 @@ public struct CompletionRequest: Equatable, Sendable {
 public struct CompletionOutcome: Equatable, Sendable {
     public var line: String
     public var hint: String
+    /// Remaining matches when Tab could not pick a single name. Empty when the line was uniquely filled.
+    public var suggestions: [CompletionSuggestion]
+
+    public init(line: String, hint: String, suggestions: [CompletionSuggestion] = []) {
+        self.line = line
+        self.hint = hint
+        self.suggestions = suggestions
+    }
 }
 
 /// Tab completion for the virtual shell. Matching is case-insensitive, and a path is
@@ -50,6 +80,58 @@ public enum LineCompletion {
         )
     }
 
+    /// Candidates for the live suggestion menu (no line rewrite).
+    public static func suggestions(
+        request: CompletionRequest,
+        names: [CompletionName],
+        commands: [String]
+    ) -> [CompletionSuggestion] {
+        if request.prefix == "~", request.head.isEmpty, !request.command {
+            return [
+                CompletionSuggestion(display: "~/", insert: "~/", isDirectory: true, kind: .folder),
+            ]
+        }
+        if request.prefix.hasPrefix("-"), request.head.isEmpty, !request.command {
+            return []
+        }
+        return pool(request: request, names: names, commands: commands).map {
+            suggestion(from: $0, asCommand: !request.listsFiles)
+        }
+    }
+
+    /// Inserts one picked suggestion into the line (same quoting rules as Tab).
+    public static func apply(
+        line: String,
+        request: CompletionRequest,
+        suggestion: CompletionSuggestion
+    ) -> String {
+        if suggestion.kind == .command {
+            let raw = suggestion.insert
+            let name = raw.hasSuffix(" ") ? String(raw.dropLast()) : raw
+            let trailing = raw.hasSuffix(" ") ? " " : ""
+            let replacement = render(
+                head: "",
+                name: name,
+                suffix: "",
+                trailing: trailing,
+                quote: request.quote,
+                close: true
+            )
+            return replace(line, request: request, with: replacement)
+        }
+        let suffix = suggestion.isDirectory ? "/" : ""
+        let trailing = suggestion.isDirectory ? "" : " "
+        let replacement = render(
+            head: request.head,
+            name: suggestion.display,
+            suffix: suffix,
+            trailing: trailing,
+            quote: request.quote,
+            close: true
+        )
+        return replace(line, request: request, with: replacement)
+    }
+
     public static func complete(
         line: String,
         request: CompletionRequest,
@@ -64,24 +146,13 @@ public enum LineCompletion {
             return CompletionOutcome(line: line, hint: "")
         }
 
-        let hidden = request.prefix.hasPrefix(".")
-        let pool: [CompletionName]
-        if request.listsFiles {
-            pool = names
-                .filter { matches(request.prefix, name: $0.name, hidden: hidden) }
-                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        } else {
-            pool = commands
-                .filter { matches(request.prefix, name: $0, hidden: true) }
-                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-                .map { CompletionName(name: $0, isDirectory: false) }
-        }
-        guard !pool.isEmpty else {
+        let matches = pool(request: request, names: names, commands: commands)
+        guard !matches.isEmpty else {
             let hint = request.prefix.isEmpty ? "" : (request.listsFiles ? "No matching file or folder" : "No matching command")
             return CompletionOutcome(line: line, hint: hint)
         }
-        if pool.count == 1 {
-            let only = pool[0]
+        if matches.count == 1 {
+            let only = matches[0]
             let suffix = only.isDirectory ? "/" : ""
             let trailing = only.isDirectory ? "" : " "
             let replacement = render(
@@ -95,12 +166,14 @@ public enum LineCompletion {
             return CompletionOutcome(line: replace(line, request: request, with: replacement), hint: "")
         }
 
-        let shared = sharedPrefix(pool.map(\.name))
+        let shared = sharedPrefix(matches.map(\.name))
         let grew = shared.count > request.prefix.count
         let corrected = shared.count == request.prefix.count && shared != request.prefix
-        let hint = hint(for: pool.map(\.name))
+        let candidates = matches.map { suggestion(from: $0, asCommand: !request.listsFiles) }
+        // Always return every match; the phone UI scrolls the dropdown. Hint only nudges when Tab was used.
+        let countHint = candidates.count > 8 ? "\(candidates.count) matches · scroll the list above" : ""
         guard grew || corrected else {
-            return CompletionOutcome(line: line, hint: hint)
+            return CompletionOutcome(line: line, hint: countHint, suggestions: candidates)
         }
         let replacement = render(
             head: request.head,
@@ -110,7 +183,61 @@ public enum LineCompletion {
             quote: request.quote,
             close: false
         )
-        return CompletionOutcome(line: replace(line, request: request, with: replacement), hint: hint)
+        return CompletionOutcome(
+            line: replace(line, request: request, with: replacement),
+            hint: countHint,
+            suggestions: candidates
+        )
+    }
+
+    private static func pool(
+        request: CompletionRequest,
+        names: [CompletionName],
+        commands: [String]
+    ) -> [CompletionName] {
+        let hidden = request.prefix.hasPrefix(".")
+        if request.listsFiles {
+            return names
+                .filter { matches(request.prefix, name: $0.name, hidden: hidden) }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
+        return commands
+            .filter { matches(request.prefix, name: $0, hidden: true) }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            .map { CompletionName(name: $0, isDirectory: false) }
+    }
+
+    private static func suggestion(from name: CompletionName, asCommand: Bool) -> CompletionSuggestion {
+        if name.isDirectory {
+            return CompletionSuggestion(
+                display: name.name,
+                insert: name.name + "/",
+                isDirectory: true,
+                kind: .folder
+            )
+        }
+        if asCommand {
+            if let help = CommandCatalog.entry(named: name.name) {
+                return CompletionSuggestion(
+                    display: name.name,
+                    insert: help.insertPrefix,
+                    isDirectory: false,
+                    kind: .command
+                )
+            }
+            return CompletionSuggestion(
+                display: name.name,
+                insert: name.name,
+                isDirectory: false,
+                kind: .command
+            )
+        }
+        return CompletionSuggestion(
+            display: name.name,
+            insert: name.name,
+            isDirectory: false,
+            kind: .file
+        )
     }
 
     private static func pathParts(_ token: String) -> (head: String, prefix: String) {
@@ -154,13 +281,6 @@ public enum LineCompletion {
             if limit.isEmpty { break }
         }
         return limit
-    }
-
-    private static func hint(for names: [String]) -> String {
-        let shown = names.prefix(8)
-        var text = shown.joined(separator: "  ")
-        if names.count > shown.count { text += "  …" }
-        return text
     }
 
     private static func render(

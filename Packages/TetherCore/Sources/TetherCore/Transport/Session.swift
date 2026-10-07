@@ -29,15 +29,20 @@ public protocol HostServing: Sendable {
     func decide(_ request: ApprovalRequest) async -> Bool
     func note(_ event: String)
     func connected(deviceId: String, name: String)
-    func disconnected(deviceId: String)
     func files() -> any FileProvider
     func thumbnail(virtualPath: String, maxPixel: Int) async -> Data?
     var abuse: AbuseGuard { get }
-    func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void)
-    func ignoreConnection(for deviceId: String)
+    /// Registers this connection as the live one for `deviceId`. Closes any previous connection.
+    /// Returns a generation token so a stale session cannot clear the newer one.
+    func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void) -> UInt64
+    func ignoreConnection(for deviceId: String, generation: UInt64)
+    /// Returns false when a newer connection already replaced this one.
+    @discardableResult
+    func disconnected(deviceId: String, generation: UInt64) -> Bool
     /// Reserved. v1.1 does not run a general Mac shell for the phone; return nil.
     func runShell(line: String, cwd: String) async -> TerminalResult?
     /// Opens a live terminal for a coding agent. `onData` and `onExit` may run on a background queue.
+    /// Returns a bridge generation the session must pass to `suspendTerminal`.
     func openTerminal(
         id: String,
         line: String,
@@ -46,14 +51,16 @@ public protocol HostServing: Sendable {
         rows: Int,
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
-    ) async throws
+    ) async throws -> UInt64
     func writeTerminal(id: String, data: Data) async
     func resizeTerminal(id: String, columns: Int, rows: Int) async
     func closeTerminal(id: String) async
     /// Keeps the agent process running when the phone's connection drops.
-    func suspendTerminal(id: String) async
-    /// Attaches a new connection to an agent that is still running. Returns false if that session is gone.
-    func resumeTerminal(id: String, onData: @escaping @Sendable (Data) -> Void, onExit: @escaping @Sendable (Int32) -> Void) async -> Bool
+    func suspendTerminal(id: String, generation: UInt64) async
+    /// Attaches a new connection to an agent that is still running. Returns nil if that session is gone.
+    func resumeTerminal(id: String, onData: @escaping @Sendable (Data) -> Void, onExit: @escaping @Sendable (Int32) -> Void) async -> UInt64?
+    func preventSleepWhileActive() -> Bool
+    func setPreventSleepWhileActive(_ value: Bool)
 }
 
 public enum HandshakeMode: Sendable {
@@ -106,6 +113,8 @@ private actor HostSession {
     private let terminal = TerminalEngine()
     private let sampler = SystemSampler()
     private var terminalIDs: [String] = []
+    private var terminalGens: [String: UInt64] = [:]
+    private var connectionGeneration: UInt64 = 0
 
     init(stream: any ByteStream, remote: String, server: any HostServing) {
         self.stream = stream
@@ -121,7 +130,7 @@ private actor HostSession {
             deviceName = identity.name
             announced = true
             let closer = stream
-            server.watchConnection(for: identity.id) {
+            connectionGeneration = server.watchConnection(for: identity.id) {
                 Task { await closer.close() }
             }
             server.connected(deviceId: deviceId, name: deviceName)
@@ -135,9 +144,10 @@ private actor HostSession {
         }
         await suspendLiveTerminals()
         if announced {
-            server.ignoreConnection(for: deviceId)
-            server.disconnected(deviceId: deviceId)
-            server.note("\(deviceName) disconnected")
+            server.ignoreConnection(for: deviceId, generation: connectionGeneration)
+            if server.disconnected(deviceId: deviceId, generation: connectionGeneration) {
+                server.note("\(deviceName) disconnected")
+            }
         }
         await server.files().abortAllUploads()
         await stream.close()
@@ -400,8 +410,9 @@ private actor HostSession {
             let rows = min(200, max(2, message.header.rows ?? 24))
             let id = UUID().uuidString
             let pump = startTerminalPump(session: id)
+            let generation: UInt64
             do {
-                try await server.openTerminal(
+                generation = try await server.openTerminal(
                     id: id,
                     line: line,
                     cwd: cwd,
@@ -415,6 +426,7 @@ private actor HostSession {
                 throw error
             }
             terminalIDs.append(id)
+            terminalGens[id] = generation
             header.session = id
             server.note("Opened \(AgentPrograms.displayName(program))")
             try await send(WireMessage(kind: .response, header: header))
@@ -432,18 +444,25 @@ private actor HostSession {
             guard let id = message.header.session, !id.isEmpty else { throw ProtocolFailure.malformed }
             await server.closeTerminal(id: id)
             terminalIDs.removeAll { $0 == id }
+            terminalGens[id] = nil
             try await send(WireMessage(kind: .response, header: header))
         case Op.termResume:
             guard let id = message.header.session, !id.isEmpty else { throw ProtocolFailure.malformed }
             let pump = startTerminalPump(session: id)
-            let resumed = await server.resumeTerminal(id: id, onData: pump.data, onExit: pump.exit)
-            guard resumed else {
+            guard let generation = await server.resumeTerminal(id: id, onData: pump.data, onExit: pump.exit) else {
                 pump.cancel()
                 throw ProtocolFailure(code: .notFound, message: "That session on your Mac has ended.")
             }
             if !terminalIDs.contains(id) { terminalIDs.append(id) }
+            terminalGens[id] = generation
             header.session = id
             server.note("Rejoined a terminal")
+            try await send(WireMessage(kind: .response, header: header))
+        case Op.prefs:
+            if let value = message.header.preventSleep {
+                server.setPreventSleepWhileActive(value)
+            }
+            header.preventSleep = server.preventSleepWhileActive()
             try await send(WireMessage(kind: .response, header: header))
         default:
             throw ProtocolFailure(code: .badRequest, message: "That request isn't supported.")
@@ -738,12 +757,29 @@ public actor ClientConnection {
         return session
     }
 
+    /// Sends keystrokes without waiting for the host ACK so remote typing stays snappy.
     public func writeTerminal(session: String, data: Data) async throws {
         guard !data.isEmpty else { return }
         var header = Header()
         header.op = Op.termInput
         header.session = session
-        _ = try await roundTrip(header, body: data, timeout: .seconds(8))
+        header.requestId = takeID()
+        try await send(WireMessage(kind: .request, header: header, body: data))
+    }
+
+    public func hostPrefs() async throws -> Bool {
+        var header = Header()
+        header.op = Op.prefs
+        let reply = try await roundTrip(header, timeout: .seconds(8))
+        return reply.header.preventSleep ?? false
+    }
+
+    public func setHostPreventSleep(_ value: Bool) async throws -> Bool {
+        var header = Header()
+        header.op = Op.prefs
+        header.preventSleep = value
+        let reply = try await roundTrip(header, timeout: .seconds(8))
+        return reply.header.preventSleep ?? value
     }
 
     public func resizeTerminal(session: String, columns: Int, rows: Int) async throws {
@@ -1054,13 +1090,17 @@ private extension HostSession {
         header.exit = Int(code)
         try? await send(WireMessage(kind: .event, header: header))
         terminalIDs.removeAll { $0 == session }
+        terminalGens[session] = nil
     }
 
     func suspendLiveTerminals() async {
         let ids = terminalIDs
+        let gens = terminalGens
         terminalIDs.removeAll()
+        terminalGens.removeAll()
         for id in ids {
-            await server.suspendTerminal(id: id)
+            guard let generation = gens[id] else { continue }
+            await server.suspendTerminal(id: id, generation: generation)
         }
     }
 }

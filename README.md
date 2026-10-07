@@ -1,6 +1,6 @@
 # Tether
 
-Version 2.1.
+Version 2.2.
 
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
@@ -11,7 +11,7 @@ There is no account, no third-party networking library, and no third-party crypt
 ## What you can do
 
 - Share only the folders you pick. The rest of the Mac is not a filesystem the phone can walk.
-- Browse those folders on the iPhone in a list or a grid, sort them, search by name, and open a file in QuickLook (photos, video, audio, PDF, and the other types QuickLook supports).
+- Browse those folders on the iPhone in a list or a grid, sort them, search by name across every shared folder, and open a file in QuickLook (photos, video, audio, PDF, and the other types QuickLook supports).
 - Download files to the phone and upload files into a folder that you have marked writable.
 - Watch transfer progress, retry, and cancel.
 - Use a terminal on the phone for everyday file commands (`ls`, `cd`, `cat`, `find`, and the rest listed below). Those commands stay inside the shared folders.
@@ -58,8 +58,9 @@ The menu bar menu shows whether sharing is on, which phones are connected, and s
 | iPhones | Paired phones, including ones nearby, and revoke |
 | Other networks | Listen for connections from outside this Wi-Fi, show addresses, set a relay, and copy the setup code |
 | Activity | A short log of pairing and connection events. Filter and clear it here |
+| Settings | Opens the full Settings window (same as ⌘, or the menu bar **Settings…**) |
 
-Settings (the macOS Settings window) repeats general options, folders, phones, other networks, activity, and **What's new**. General settings include the name shown on the iPhone, launch at login, require approval for each session, the sharing switch, the icon color (Gold, Blue, Green, or Neutral), and the version.
+Settings includes General, Folders, iPhones, Other networks, Activity, and **What's new**.
 
 Folders start read-only. Turn on **Allow uploads** for a folder before the phone can add files there. Uploads are still limited to that folder. Paths that try to escape it are rejected.
 
@@ -78,7 +79,7 @@ The iPhone target must be signed with your Apple ID. A simulator build is alread
 7. Tap **Pair**, scan the QR code, or type the 16-character code. On the Mac, tap **Allow**.
 8. The phone opens the shared folders. Files, Terminal, and Transfers are the three tabs.
 
-iPhone Settings has the device name (what the Mac shows for this phone), the home-screen icon (Gold, Blue, Green, or Neutral; light, dark, and tinted follow the system), a cache size and clear button, terminal font size from 11 to 20 points, **Other networks** for the remote setup code, and **What's new** for this version.
+iPhone Settings has the device name (what the Mac shows for this phone), the home-screen icon (Gold, Blue, Green, or Neutral; light, dark, and tinted follow the system), a cache size and clear button, terminal font size from 11 to 20 points, prevent Mac sleep while active (synced when connected), **Other networks** for the remote setup code, and **What's new** for this version.
 
 ## Everyday use on the iPhone
 
@@ -88,7 +89,7 @@ The file browser starts at `/`, which is the list of shared folders, not the Mac
 
 Downloads land in the app’s local files. Uploads use the system file picker and only succeed in a folder whose Mac-side switch allows uploads. The Transfers tab shows active and finished transfers, progress, and failures. Keep Tether in the foreground during a transfer. iOS can suspend the app, and a suspended app does not continue the copy.
 
-The Terminal tab is a prompt of the form `mac-name:/Share/dir $`. History is the up and down keys. Tab completes commands and names in the current folder. Output wraps to the width of the monospaced font so a long line is not cut off at the edge of the screen. `exit` returns to Files. `clear` wipes the scrollback.
+The Terminal tab is a prompt of the form `mac-name:/Share/dir $`. History is the up and down keys. Tab completes commands and names in the current folder; a scrollable list above the prompt shows every match (tap to insert). Type `help` for a catalog with each command’s syntax and flags. Output wraps to the width of the monospaced font so a long line is not cut off at the edge of the screen. `exit` returns to Files. `clear` wipes the scrollback.
 
 ## Terminal commands
 
@@ -166,6 +167,8 @@ There is no kill or renice. The process list needs the Mac app’s process-info 
 
 ## Other networks
 
+Step-by-step setup for Tailscale, relay, and port forward (including cellular → home Mac) lives in [docs/help/remote-access.md](docs/help/remote-access.md). Use that file for FAQ or website help later.
+
 A home address such as `192.168.x.x` only works on that Wi-Fi. The internet cannot route to it. Tether has two ways to connect when Bonjour does not see the Mac.
 
 1. **A reachable address.** The Mac listens on port **52173** while **Allow connections from other networks** is on. The Other networks page lists this Mac’s addresses. A Tailscale address (`100.x`) is preferred when one exists, then a public address, then a VPN address, then the Wi-Fi address. You can type a hostname instead, for example the name you forwarded on your router. The phone tries that address when the Mac is not on the local network. Private Wi-Fi addresses are only tried briefly, then Tether falls through to the relay if you set one.
@@ -218,7 +221,7 @@ Tether/
 │   ├── Remote/          addresses, setup codes, relay
 │   ├── FileSystem/      virtual paths, sanitizer, disk and memory providers
 │   └── Terminal/        command parser, virtual commands, system stats
-└── docs/                PRD.md and DESIGN.md
+└── docs/                PRD.md, DESIGN.md, and help/ (remote access FAQ)
 ```
 
 `TetherCore` is the only place for networking, crypto, the wire protocol, path checks, and terminal logic. The apps are UI and platform glue. View state uses `@Observable`. Views do not own the protocol.
@@ -240,6 +243,17 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 ## Changelog
 
 The same notes are in Settings → What's new on both the Mac and the iPhone.
+
+### 2.2
+
+Stay awake during remote sessions, keep agents usable over hotspot and other networks, and type less in the everyday terminal.
+
+- Prevent sleep while active (Mac and iPhone Settings): the Mac stays awake while a phone is connected or an agent is still running.
+- Reconnect after a network switch no longer detaches a live agent when the old socket closes.
+- Keystrokes over remote links are sent without waiting for each ACK.
+- Path changes are probed sooner; the terminal keyboard returns when the agent resumes.
+- Terminal suggestions: scrollable dropdown for commands and path segments (listed fresh from the Mac folder you are completing); Tab still unique-fills or opens the same list. `help` opens a tappable catalog with typed syntax (flags and placeholders).
+- Files search: type in the search field to find files and folders across all shares; tap a result to preview or open that folder.
 
 ### 2.1
 

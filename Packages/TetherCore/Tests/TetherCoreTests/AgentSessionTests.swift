@@ -170,7 +170,10 @@ import Testing
     #expect(blocked.exit == 1)
     #expect(blocked.stderr.contains("live screen"))
     try await client.writeTerminal(session: id, data: Data("x".utf8))
-    #expect(server.terminalWrites == [Data("x".utf8)])
+    let wrote = await waitUntil(timeout: .seconds(2)) {
+        server.terminalWrites == [Data("x".utf8)]
+    }
+    #expect(wrote)
     await client.close()
     hostTask.cancel()
     await pipe.close()
@@ -179,19 +182,59 @@ import Testing
 @Test func terminalBridgeKeepsOutputWhileSuspended() async {
     let bridge = TerminalBridge()
     let box = OutputBox()
+    let first = bridge.resume(onData: { box.append($0) }, onExit: { box.finish($0) })
     bridge.push(Data("a".utf8))
-    bridge.suspend()
+    bridge.suspend(generation: first)
     bridge.push(Data("b".utf8))
-    bridge.resume(onData: { box.append($0) }, onExit: { box.finish($0) })
+    let second = bridge.resume(onData: { box.append($0) }, onExit: { box.finish($0) })
     bridge.push(Data("c".utf8))
     let saw = await box.waitUntil { data, _ in
         String(data: data, encoding: .utf8) == "abc"
     }
     #expect(saw)
+    #expect(second != first)
     bridge.finish(0)
     let ended = await box.wait()
     #expect(ended)
     #expect(box.snapshot().1 == 0)
+}
+
+@Test func terminalBridgeIgnoresStaleSuspendAfterResume() async {
+    let bridge = TerminalBridge()
+    let box = OutputBox()
+    let stale = bridge.resume(onData: { _ in }, onExit: { _ in })
+    let live = bridge.resume(onData: { box.append($0) }, onExit: { box.finish($0) })
+    bridge.suspend(generation: stale)
+    bridge.push(Data("kept".utf8))
+    let saw = await box.waitUntil { data, _ in
+        String(data: data, encoding: .utf8) == "kept"
+    }
+    #expect(saw)
+    #expect(live != stale)
+    bridge.suspend(generation: live)
+    bridge.push(Data("parked".utf8))
+    let again = bridge.resume(onData: { box.append($0) }, onExit: { box.finish($0) })
+    let parked = await box.waitUntil { data, _ in
+        String(data: data, encoding: .utf8) == "keptparked"
+    }
+    #expect(parked)
+    #expect(again != live)
+}
+
+@Test func sleepPolicyStaysAwakeOnlyWhileSomethingIsActive() {
+    #expect(SleepPolicy.shouldStayAwake(enabled: true, connectedDevices: 1, liveAgents: 0))
+    #expect(SleepPolicy.shouldStayAwake(enabled: true, connectedDevices: 0, liveAgents: 1))
+    #expect(!SleepPolicy.shouldStayAwake(enabled: true, connectedDevices: 0, liveAgents: 0))
+    #expect(!SleepPolicy.shouldStayAwake(enabled: false, connectedDevices: 2, liveAgents: 2))
+}
+
+private func waitUntil(timeout: Duration, _ condition: @Sendable () -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return condition()
 }
 
 #if os(macOS)
