@@ -680,6 +680,7 @@ final class HostRuntime: HostServing, @unchecked Sendable {
     private var macName: String
     private var requireApproval = false
     private let provider = DiskFileProvider()
+    private var agents: [String: LiveAgent] = [:]
     var onEvent: (@Sendable (RuntimeEvent) -> Void)?
 
     init(hostId: String, macName: String) {
@@ -816,6 +817,98 @@ final class HostRuntime: HostServing, @unchecked Sendable {
             return values
         }
         all.forEach { $0() }
+    }
+
+    func openTerminal(
+        id: String,
+        line: String,
+        cwd: String,
+        columns: Int,
+        rows: Int,
+        onData: @escaping @Sendable (Data) -> Void,
+        onExit: @escaping @Sendable (Int32) -> Void
+    ) async throws {
+        let directory = try workingDirectory(cwd)
+        let scoped = directory.startAccessingSecurityScopedResource()
+        let script = AgentPrograms.shellScript(line: line, directory: directory.path)
+        let bridge = TerminalBridge()
+        bridge.resume(onData: onData, onExit: { [weak self] code in
+            onExit(code)
+            self?.releaseAgent(id)
+        })
+        guard let session = PTYSession.start(
+            id: id,
+            argv: ["/bin/zsh", "-lic", script],
+            directory: directory.path,
+            environment: AgentEnvironment.make(directory: directory.path),
+            columns: columns,
+            rows: rows,
+            onData: { bridge.push($0) },
+            onExit: { bridge.finish($0) }
+        ) else {
+            if scoped { directory.stopAccessingSecurityScopedResource() }
+            throw ProtocolFailure(code: .internalError, message: "Couldn't open a terminal on this Mac.")
+        }
+        let live = LiveAgent(session: session, bridge: bridge, folder: directory, scoped: scoped)
+        let previous: [LiveAgent] = sync {
+            let others = Array(agents.values)
+            agents[id] = live
+            return others
+        }
+        for agent in previous where agent.session.id != id {
+            agent.session.terminate()
+            releaseAgent(agent.session.id)
+        }
+    }
+
+    func suspendTerminal(id: String) async {
+        sync { agents[id]?.bridge.suspend() }
+    }
+
+    func resumeTerminal(
+        id: String,
+        onData: @escaping @Sendable (Data) -> Void,
+        onExit: @escaping @Sendable (Int32) -> Void
+    ) async -> Bool {
+        let bridge = sync { agents[id]?.bridge }
+        guard let bridge else { return false }
+        bridge.resume(onData: onData, onExit: { [weak self] code in
+            onExit(code)
+            self?.releaseAgent(id)
+        })
+        return true
+    }
+
+    func writeTerminal(id: String, data: Data) async {
+        sync { agents[id]?.session }?.write(data)
+    }
+
+    func resizeTerminal(id: String, columns: Int, rows: Int) async {
+        sync { agents[id]?.session }?.resize(columns: columns, rows: rows)
+    }
+
+    func closeTerminal(id: String) async {
+        sync { agents[id]?.session }?.terminate()
+    }
+
+    private func releaseAgent(_ id: String) {
+        let live = sync { agents.removeValue(forKey: id) }
+        if live?.scoped == true { live?.folder.stopAccessingSecurityScopedResource() }
+    }
+
+    private func workingDirectory(_ cwd: String) throws -> URL {
+        let virtual = (try? VirtualPath.parse(cwd)) ?? .root
+        if virtual.isRoot {
+            return URL(fileURLWithPath: AgentEnvironment.home, isDirectory: true)
+        }
+        guard let url = try? provider.fileURL(for: virtual) else {
+            throw ProtocolFailure(code: .notFound, message: "That folder isn't available.")
+        }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return url
+        }
+        return url.deletingLastPathComponent()
     }
 
     private func sync<T>(_ body: () throws -> T) rethrows -> T {

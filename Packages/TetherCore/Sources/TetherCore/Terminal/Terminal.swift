@@ -104,7 +104,7 @@ public struct TerminalEngine: Sendable {
         "btop", "cat", "cd", "clear", "cp", "date", "du", "echo", "exit", "fastfetch", "fetch", "find", "get", "grep",
         "head", "help", "htop", "ls", "mkdir", "monitor", "mv", "neofetch", "open", "preview", "put", "pwd", "rm",
         "rmdir", "stat", "status", "tail", "touch", "tree", "wc", "whoami",
-    ]
+    ] + AgentPrograms.completionNames
 
     private func help(cwd: VirtualPath) -> TerminalResult {
         let text = """
@@ -137,8 +137,11 @@ public struct TerminalEngine: Sendable {
         put                  upload into this folder
         clear                clear the screen
         exit                 leave the terminal
+        claude               Claude Code, live on this iPhone
+        agent                Cursor's agent (cursor and codex too)
 
         Other Mac commands, including pipes, run on your Mac.
+        claude, agent, and codex open the real program, with this iPhone as the screen.
 
         """
         return TerminalResult(stdout: text, cwd: cwd.string)

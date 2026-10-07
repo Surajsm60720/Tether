@@ -1,8 +1,8 @@
 # Tether
 
-Version 1.2.
+Version 2.0.
 
-Tether lets an iPhone browse, preview, download, and upload files on a Mac, and run a terminal against those folders, without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
+Tether lets an iPhone browse, preview, download, and upload files on a Mac, run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
 On the same Wi-Fi, the Mac advertises itself and the phone finds it. Away from that network, the phone can still connect if you save a reachable address (a public hostname, a forwarded port, or a Tailscale address) or if both devices dial out to a small relay you run. File contents and terminal commands stay encrypted with the pairing key. A relay only forwards bytes.
 
@@ -14,7 +14,8 @@ There is no account, no third-party networking library, and no third-party crypt
 - Browse those folders on the iPhone in a list or a grid, sort them, search by name, and open a file in QuickLook (photos, video, audio, PDF, and the other types QuickLook supports).
 - Download files to the phone and upload files into a folder that you have marked writable.
 - Watch transfer progress, retry, and cancel.
-- Use a terminal on the phone for everyday file commands (`ls`, `cd`, `cat`, `find`, and the rest listed below). Commands stay inside the shared folders.
+- Use a terminal on the phone for everyday file commands (`ls`, `cd`, `cat`, `find`, and the rest listed below). Those commands stay inside the shared folders.
+- Type an allowlisted agent name (`claude`, `agent`, `codex`, `cursor`, and the rest) to open a live terminal session on the Mac. The phone is the screen and keyboard. The agent keeps running if you leave the app; reconnect resumes it.
 - Ask the Mac who you are, print a short system summary, and open a live monitor for CPU, memory, swap, disk, network, battery, temperature, and the busiest processes.
 - Approve or revoke each iPhone from the Mac. A revoked phone cannot open a new session.
 - Reach the Mac from another network with a saved address or a relay, after you have paired once on Wi-Fi.
@@ -126,9 +127,22 @@ These commands are implemented in Tether and only see shared folders. `~` is `/`
 | `clear` | Clear the screen |
 | `exit` | Leave the terminal |
 
-As of 1.1, unknown commands and shell operators (`|`, `>`, `;`, and the rest) are rejected. The phone never gets a general Mac shell. Only the built-in commands above run, and they stay inside the folders you shared.
+Unknown commands and shell operators (`|`, `>`, `;`, and the rest) are rejected for a general Mac shell. The built-in commands above stay inside the folders you shared.
+
+Typing an allowlisted coding-agent name opens a live PTY on the Mac instead (see **Live coding agents** below). Tab completes commands and names in the current folder.
 
 `whoami`, `status`, `fetch`, and `htop` do not shell out. They use system calls on the Mac and the existing encrypted session.
+
+## Live coding agents
+
+From the Terminal tab, run a program name from the allowlist (for example `claude`, `agent`, `codex`, `cursor`, `aider`, `gemini`). Tether:
+
+1. Opens a pseudo-terminal on the Mac with your login shell PATH and credentials.
+2. Starts the agent in the current share folder, or in your home directory when the working folder is `/`.
+3. Streams output to the phone and sends keystrokes back.
+4. Keeps the process alive if you switch away or the connection drops; the phone can resume the same session.
+
+Shell operators are not allowed on this path, so a live session cannot be turned into an arbitrary script. Closing the session from the phone ends the process. Only pair a phone you trust: an agent runs as your Mac user.
 
 ## The monitor
 
@@ -183,7 +197,7 @@ Tether’s threat model is another device on the network, or a stranger who can 
 - Logs use `os.Logger` and mark paths and names private. Tether does not log keys, pairing secrets, or file contents.
 - Remote listening is off until you turn it on. The port is still protected by the pairing handshake. Only a phone you have paired can list or read files.
 - The relay learns that two peers want to meet, and it sees the handshake headers. After the handshake, file and terminal bytes are ciphertext. The relay does not have the device key.
-- The Mac app is sandboxed. It can read and write the folders you choose, plus the tool-path exceptions in `TetherHost/TetherHost.entitlements`. Process listing for the monitor is a sandbox exception (`process-info`). The phone does not get a general Mac shell.
+- The Mac app is sandboxed. The file browser stays inside folders you choose. Allowlisted coding agents run as your Mac user (home and tool paths) via PTY sandbox exceptions. Process listing for the monitor uses `process-info`. The phone does not get a general Mac shell.
 - Inbound connections are capped and must finish the handshake within a short deadline. Failed handshakes and pairing codes are rate-limited.
 
 A compromised Mac or a compromised iPhone is outside this design. So is a full interactive shell. That would be a different mode, off by default, and it is not in this build.
@@ -225,6 +239,15 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 
 The same notes are in Settings → What's new on both the Mac and the iPhone.
 
+### 2.0
+
+Live coding agents and terminal polish on top of the 1.x security line.
+
+- Allowlisted agents (`claude`, `agent`, `codex`, `cursor`, and related CLIs) open a live PTY on the Mac.
+- Phone acts as screen and keyboard; sessions survive app switch and reconnect.
+- Batched PTY output and viewport-only drawing for long agent runs.
+- Tab completion for everyday terminal commands and paths.
+
 ### 1.2
 
 Continued security and reliability hardening on the 1.x line.
@@ -264,6 +287,7 @@ Security patch over 1.0.
 - The phone cannot see folders you did not share.
 - Transfers stop if iOS suspends the app.
 - `htop` is a Tether screen, not the `htop` or `btop` program. `fetch` is a Tether portrait, not the real neofetch binary.
-- Interactive TUIs, including Claude Code and the Cursor CLI, are not hosted. They need a pseudo-terminal that stays alive when the phone locks, and a phone view that understands a full terminal. That is not this terminal.
+- Only allowlisted coding-agent names get a live PTY. There is still no general interactive shell for arbitrary programs.
+- A live agent runs as your Mac user (home and tool paths). The file browser remains limited to shares you chose.
 - Temperature depends on sensors the Mac exposes to the app. If a sensor is missing, the monitor still shows the thermal state (Nominal, Fair, Serious, or Critical).
 - A relay or an open port is reachable by anyone who can route to it. They still need a paired device key to read files. Do not publish the setup code.

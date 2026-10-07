@@ -14,9 +14,17 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "1.2"
+    public static let current = "2.0"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "2.0", items: [
+            "Run allowlisted coding agents from the phone: Claude Code, Cursor Agent, Codex, and related CLIs.",
+            "A live pseudo-terminal on the Mac drives the agent; the phone is the screen and keyboard.",
+            "Agents keep running when you leave the app; reconnect resumes the same session.",
+            "Batched PTY output and a viewport-only phone draw keep long agent runs cooler and smoother.",
+            "Tab completion for commands and paths in the everyday terminal.",
+            "Everyday file commands stay virtual and share-scoped; only named agents get a live PTY.",
+        ]),
         ReleaseNotes(version: "1.2", items: [
             "Faster reconnect when the iPhone wakes: dead sockets are probed and replaced instead of hanging.",
             "Cancelled transfers release their waiters immediately instead of leaking for the session lifetime.",

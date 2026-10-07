@@ -9,10 +9,18 @@ struct TerminalScreen: View {
     @FocusState private var focused: Bool
     @State private var draft = ""
     @State private var importing = false
+    @State private var control = false
+    @State private var completionHint = ""
+    @State private var hintedDraft = ""
+    @State private var accessoryDraft = ""
+    @State private var completionToken = 0
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            if store.agentProgram != nil {
+                AgentTerminalView(store: store)
+            } else {
             GeometryReader { geo in
                 let inner = max(120, geo.size.width - 24)
                 ScrollViewReader { proxy in
@@ -43,12 +51,25 @@ struct TerminalScreen: View {
                 }
             }
             promptRow
-            AccessoryKeyRow { token in
+            if control {
+                Text("Control on. C stops the command. L clears the screen.")
+                    .font(.caption2)
+                    .foregroundStyle(TerminalTheme.standard.dim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+            }
+            AccessoryKeyRow(control: control) { token in
                 apply(token)
+            }
             }
         }
         .background(TerminalTheme.standard.bg)
+        .toolbar(store.agentProgram == nil ? .visible : .hidden, for: .tabBar)
         .onAppear { focused = true }
+        .onChange(of: store.agentProgram) { _, program in
+            if program == nil { focused = true }
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
             if case let .success(url) = result {
                 let accessing = url.startAccessingSecurityScopedResource()
@@ -79,19 +100,34 @@ struct TerminalScreen: View {
                     .font(.caption)
                     .foregroundStyle(TerminalTheme.standard.fg)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(store.terminalCWD)
+                Text(store.agentProgram.map { AgentPrograms.displayName($0) } ?? store.terminalCWD)
                     .font(.caption)
                     .foregroundStyle(TerminalTheme.standard.dir)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
+            if store.agentProgram != nil {
+                Button {
+                    UIPasteboard.general.string = store.agentSurface?.screen.plainText()
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .foregroundStyle(TerminalTheme.standard.dim)
+                }
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("Copy screen")
+            }
             Button {
-                store.sessionTab = 0
+                if store.agentProgram != nil {
+                    Task { await store.finishAgent() }
+                } else {
+                    store.sessionTab = 0
+                }
             } label: {
                 Image(systemName: "xmark")
                     .foregroundStyle(TerminalTheme.standard.dim)
             }
-            .accessibilityLabel("Back to files")
+            .frame(minWidth: 44, minHeight: 44)
+            .accessibilityLabel(store.agentProgram == nil ? "Back to files" : "Close session")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -117,8 +153,32 @@ struct TerminalScreen: View {
                     submit()
                     focused = true
                 }
+                .onChange(of: draft) { previous, next in
+                    guard next != accessoryDraft, control, next.count == previous.count + 1, previous == String(next.dropLast()), let character = next.last else {
+                        if next != hintedDraft { completionHint = "" }
+                        return
+                    }
+                    control = false
+                    draft = previous
+                    switch character.lowercased() {
+                    case "c": store.interruptTerminal()
+                    case "l":
+                        store.clearTerminal()
+                        completionHint = ""
+                    default:
+                        completionHint = "Control \(character.uppercased()) has no action in this shell."
+                        hintedDraft = previous
+                    }
+                }
             TerminalCursor(height: store.fontSize, animate: !reduceMotion)
                 .allowsHitTesting(false)
+            }
+            if !completionHint.isEmpty {
+                Text(completionHint)
+                    .font(.system(size: max(11, store.fontSize - 2), design: .monospaced))
+                    .foregroundStyle(TerminalTheme.standard.dim)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.horizontal, 12)
@@ -144,45 +204,69 @@ struct TerminalScreen: View {
     private func submit() {
         let line = draft
         draft = ""
+        completionHint = ""
+        control = false
         Task { await store.runTerminal(line) }
     }
 
     private func apply(_ token: String) {
         switch token {
         case "Tab":
-            draft += suggested
+            completeDraft()
         case "Esc":
+            control = false
             draft = ""
+            completionHint = ""
         case "Ctrl":
-            break
+            control.toggle()
+        case "C-c":
+            control = false
+            store.interruptTerminal()
+        case "C-l":
+            control = false
+            store.clearTerminal()
+            completionHint = ""
         case "↑":
+            control = false
             guard !store.history.isEmpty else { return }
             store.historyIndex = max(0, store.historyIndex - 1)
             draft = store.history[store.historyIndex]
         case "↓":
+            control = false
             guard !store.history.isEmpty else { return }
             store.historyIndex = min(store.history.count, store.historyIndex + 1)
             draft = store.historyIndex == store.history.count ? "" : store.history[store.historyIndex]
         default:
+            control = false
+            accessoryDraft = draft + token
             draft.append(token)
         }
         focused = true
         DispatchQueue.main.async { focused = true }
     }
 
-    private var suggested: String {
-        let partial = draft.split(separator: " ").last.map(String.init) ?? ""
-        let commands = TerminalEngine.commandNames
-        if draft.contains(" ") {
-            return store.entries.first { $0.name.hasPrefix(partial) }?.name.dropFirst(partial.count).description ?? ""
+    private func completeDraft() {
+        completionToken += 1
+        let token = completionToken
+        let current = draft
+        control = false
+        Task {
+            let result = await store.completeTerminalLine(current)
+            guard token == completionToken, draft == current else { return }
+            hintedDraft = result.line
+            draft = result.line
+            completionHint = result.hint
+            focused = true
         }
-        return commands.first { $0.hasPrefix(partial) }?.dropFirst(partial.count).description ?? ""
     }
 }
 
 struct AccessoryKeyRow: View {
+    var control: Bool
     var onKey: (String) -> Void
-    private let keys = ["Tab", "Esc", "Ctrl", "↑", "↓", "/", "~", "-", "|"]
+    private var keys: [String] {
+        control ? ["C-c", "C-l", "Esc", "Tab", "Ctrl", "↑", "↓"] : ["Tab", "Esc", "Ctrl", "↑", "↓", "/", "~", "-", "|"]
+    }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -192,11 +276,17 @@ struct AccessoryKeyRow: View {
                         .buttonStyle(.plain)
                         .font(.system(.body, design: .monospaced))
                         .frame(minWidth: 44, minHeight: 44)
+                        .foregroundStyle(TerminalTheme.standard.fg)
+                        .background(
+                            key == "Ctrl" && control ? TerminalTheme.standard.prompt.opacity(0.28) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
                         .overlay {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .strokeBorder(TerminalTheme.standard.dim, lineWidth: 1)
                         }
-                        .foregroundStyle(TerminalTheme.standard.fg)
+                        .accessibilityLabel(key == "Ctrl" ? (control ? "Control, on" : "Control") : key)
+                        .accessibilityHint(key == "Ctrl" ? "Turns Control on. The next letter is a shortcut. C stops a command. L clears the screen." : "")
                 }
             }
             .padding(.horizontal, 8)

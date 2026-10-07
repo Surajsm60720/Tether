@@ -65,9 +65,9 @@ This capability category already exists (SMB in the Files app, SFTP clients, SSH
 
 ### Non-goals (for v1)
 - N1. No Windows, Android, or Linux host or client.
-- N2. No real shell or pseudo-terminal on the Mac. The terminal is a **virtual command interpreter** that only operates inside shared folders.
+- N2. No general-purpose remote shell. Everyday commands are a virtual interpreter inside shared folders. A paired iPhone may open a live pseudo-terminal only for known coding agents (`claude`, `agent`, `codex`, and the rest of the list in Section 13.5).
 - N3. No internet or remote (outside-LAN) access, relay servers, or accounts.
-- N4. No browsing of the whole disk or launching Mac apps. Listing `/Applications` is possible only if the user shares it as a folder.
+- N4. No browsing of the whole disk from the file browser, and no launching Mac GUI apps. The coding-agent session in Section 13.5 is the exception: that process runs as the Mac user.
 - N5. No background transfers while the iOS app is suspended (Section 14.4).
 - N6. No iPad-specific layout work beyond what SwiftUI gives for free.
 - N7. No CloudKit, push notifications, or any feature requiring the paid developer program.
@@ -245,6 +245,12 @@ Plaintext inside the sealed payload:
 | `rename` | `from`, `to` | `{ok}` (Stretch) |
 | `delete` | `path` | `{ok}` (Stretch; off by default, requires per-share toggle) |
 | `term.exec` | `cwd`, `line` | `{stdout, stderr, cwd, exit, action?}` |
+| `term.open` | `cwd`, `line`, `columns`, `rows` | `{session}` for a live coding-agent terminal |
+| `term.input` | `session` (body = raw bytes) | `{ok}` |
+| `term.resize` | `session`, `columns`, `rows` | `{ok}` |
+| `term.close` | `session` | `{ok}` |
+| `term.data` | event: `session` (body = raw bytes) | host → phone |
+| `term.exit` | event: `session`, `exit` | host → phone |
 
 ### 10.4 Error codes
 `unauthorized`, `notFound`, `denied`, `outsideShare`, `readOnly`, `tooLarge`, `badRequest`, `busy`, `internal`. Responses: `{ok:false, error:{code, message}}`. Messages are user-readable and never contain real absolute paths.
@@ -358,6 +364,16 @@ Unknown commands print: `tether: command not found: <cmd>. Type 'help'.`
 
 ### 13.4 Parsing
 Implement a small tokenizer (quotes, escaped spaces) and command registry. Each command is a type conforming to `TerminalCommand` with `run(context) async throws -> TerminalResult`. All commands are unit tested against an in-memory fake filesystem.
+
+### 13.5 Live coding agents
+Typing `claude`, `cursor`, `agent`, `codex`, or another name in `AgentPrograms` opens that program on the Mac and uses the iPhone as its screen and keyboard.
+
+- The host allocates a pseudo-terminal, starts the user's login shell so PATH and credentials match Terminal.app, then `exec`s the command. At `/` the directory is the user's home; inside a share it is that folder.
+- The phone parses the byte stream (cursor movement, color, alternate screen) and sends keystrokes back. Output is `term.data`. Process exit is `term.exit`.
+- `term.exec` does not launch these programs. They need the live screen.
+- Shell syntax (`|`, `;`, `` ` ``, `$`) stays on the one-shot path so a live session cannot be turned into a script.
+- Closing the session from the phone sends SIGHUP. Switching apps does not: the process keeps running on the Mac, and the phone rejoins it when the connection returns.
+- Terminal bytes are never logged.
 
 ---
 

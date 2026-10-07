@@ -37,6 +37,23 @@ public protocol HostServing: Sendable {
     func ignoreConnection(for deviceId: String)
     /// Reserved. v1.1 does not run a general Mac shell for the phone; return nil.
     func runShell(line: String, cwd: String) async -> TerminalResult?
+    /// Opens a live terminal for a coding agent. `onData` and `onExit` may run on a background queue.
+    func openTerminal(
+        id: String,
+        line: String,
+        cwd: String,
+        columns: Int,
+        rows: Int,
+        onData: @escaping @Sendable (Data) -> Void,
+        onExit: @escaping @Sendable (Int32) -> Void
+    ) async throws
+    func writeTerminal(id: String, data: Data) async
+    func resizeTerminal(id: String, columns: Int, rows: Int) async
+    func closeTerminal(id: String) async
+    /// Keeps the agent process running when the phone's connection drops.
+    func suspendTerminal(id: String) async
+    /// Attaches a new connection to an agent that is still running. Returns false if that session is gone.
+    func resumeTerminal(id: String, onData: @escaping @Sendable (Data) -> Void, onExit: @escaping @Sendable (Int32) -> Void) async -> Bool
 }
 
 public enum HandshakeMode: Sendable {
@@ -88,6 +105,7 @@ private actor HostSession {
     private var deviceName = ""
     private let terminal = TerminalEngine()
     private let sampler = SystemSampler()
+    private var terminalIDs: [String] = []
 
     init(stream: any ByteStream, remote: String, server: any HostServing) {
         self.stream = stream
@@ -115,6 +133,7 @@ private actor HostSession {
         } catch {
             TetherLog.transport.debug("host session closed")
         }
+        await suspendLiveTerminals()
         if announced {
             server.ignoreConnection(for: deviceId)
             server.disconnected(deviceId: deviceId)
@@ -339,6 +358,13 @@ private actor HostSession {
         case Op.termExec:
             let cwd = message.header.cwd ?? "/"
             let line = message.header.line ?? ""
+            if let program = AgentPrograms.programName(in: line) {
+                header.stderr = "\(AgentPrograms.displayName(program)) needs the live screen. Type it again from the terminal on this iPhone.\n"
+                header.cwd = cwd
+                header.exit = 1
+                try await send(WireMessage(kind: .response, header: header))
+                return
+            }
             let result: TerminalResult
             if TerminalSyntax.requiresShell(line) {
                 result = TerminalResult(
@@ -363,6 +389,61 @@ private actor HostSession {
             header.exit = result.exit
             header.action = result.action
             server.note("Terminal")
+            try await send(WireMessage(kind: .response, header: header))
+        case Op.termOpen:
+            let line = message.header.line ?? ""
+            let cwd = message.header.cwd ?? "/"
+            guard let program = AgentPrograms.programName(in: line) else {
+                throw ProtocolFailure(code: .badRequest, message: "That program can't be opened from this iPhone.")
+            }
+            let columns = min(500, max(2, message.header.columns ?? 80))
+            let rows = min(200, max(2, message.header.rows ?? 24))
+            let id = UUID().uuidString
+            let pump = startTerminalPump(session: id)
+            do {
+                try await server.openTerminal(
+                    id: id,
+                    line: line,
+                    cwd: cwd,
+                    columns: columns,
+                    rows: rows,
+                    onData: pump.data,
+                    onExit: pump.exit
+                )
+            } catch {
+                pump.cancel()
+                throw error
+            }
+            terminalIDs.append(id)
+            header.session = id
+            server.note("Opened \(AgentPrograms.displayName(program))")
+            try await send(WireMessage(kind: .response, header: header))
+        case Op.termInput:
+            guard let id = message.header.session, !id.isEmpty else { throw ProtocolFailure.malformed }
+            await server.writeTerminal(id: id, data: message.body)
+            try await send(WireMessage(kind: .response, header: header))
+        case Op.termResize:
+            guard let id = message.header.session, !id.isEmpty else { throw ProtocolFailure.malformed }
+            let columns = min(500, max(2, message.header.columns ?? 80))
+            let rows = min(200, max(2, message.header.rows ?? 24))
+            await server.resizeTerminal(id: id, columns: columns, rows: rows)
+            try await send(WireMessage(kind: .response, header: header))
+        case Op.termClose:
+            guard let id = message.header.session, !id.isEmpty else { throw ProtocolFailure.malformed }
+            await server.closeTerminal(id: id)
+            terminalIDs.removeAll { $0 == id }
+            try await send(WireMessage(kind: .response, header: header))
+        case Op.termResume:
+            guard let id = message.header.session, !id.isEmpty else { throw ProtocolFailure.malformed }
+            let pump = startTerminalPump(session: id)
+            let resumed = await server.resumeTerminal(id: id, onData: pump.data, onExit: pump.exit)
+            guard resumed else {
+                pump.cancel()
+                throw ProtocolFailure(code: .notFound, message: "That session on your Mac has ended.")
+            }
+            if !terminalIDs.contains(id) { terminalIDs.append(id) }
+            header.session = id
+            server.note("Rejoined a terminal")
             try await send(WireMessage(kind: .response, header: header))
         default:
             throw ProtocolFailure(code: .badRequest, message: "That request isn't supported.")
@@ -418,6 +499,7 @@ public actor ClientConnection {
     private var heartbeat: Task<Void, Never>?
     private var lastReceived = Date()
     private var disconnectHandler: (@Sendable () -> Void)?
+    private var eventHandler: (@Sendable (WireMessage) -> Void)?
 
     public private(set) var hostId: String = ""
     public private(set) var hostName: String = ""
@@ -430,6 +512,10 @@ public actor ClientConnection {
     public var onDisconnect: (@Sendable () -> Void)? {
         get { disconnectHandler }
         set { disconnectHandler = newValue }
+    }
+
+    public func setEventHandler(_ handler: (@Sendable (WireMessage) -> Void)?) {
+        eventHandler = handler
     }
 
     public static func establish(
@@ -640,6 +726,49 @@ public actor ClientConnection {
         return stats
     }
 
+    public func openTerminal(line: String, cwd: String, columns: Int, rows: Int) async throws -> String {
+        var header = Header()
+        header.op = Op.termOpen
+        header.line = line
+        header.cwd = cwd
+        header.columns = columns
+        header.rows = rows
+        let reply = try await roundTrip(header, timeout: .seconds(20))
+        guard let session = reply.header.session, !session.isEmpty else { throw ProtocolFailure.malformed }
+        return session
+    }
+
+    public func writeTerminal(session: String, data: Data) async throws {
+        guard !data.isEmpty else { return }
+        var header = Header()
+        header.op = Op.termInput
+        header.session = session
+        _ = try await roundTrip(header, body: data, timeout: .seconds(8))
+    }
+
+    public func resizeTerminal(session: String, columns: Int, rows: Int) async throws {
+        var header = Header()
+        header.op = Op.termResize
+        header.session = session
+        header.columns = columns
+        header.rows = rows
+        _ = try await roundTrip(header, timeout: .seconds(8))
+    }
+
+    public func closeTerminal(session: String) async {
+        var header = Header()
+        header.op = Op.termClose
+        header.session = session
+        _ = try? await roundTrip(header, timeout: .seconds(4))
+    }
+
+    public func resumeTerminal(session: String) async throws {
+        var header = Header()
+        header.op = Op.termResume
+        header.session = session
+        _ = try await roundTrip(header, timeout: .seconds(8))
+    }
+
     public func exec(cwd: String, line: String) async throws -> TerminalResult {
         var header = Header()
         header.op = Op.termExec
@@ -806,6 +935,10 @@ public actor ClientConnection {
     }
 
     private func deliver(_ message: WireMessage) {
+        if message.kind == .event {
+            eventHandler?(message)
+            return
+        }
         guard let id = message.header.requestId, let box = waiters.removeValue(forKey: id) else { return }
         if message.header.ok == false {
             box.finish(.failure(message.header.error ?? ProtocolFailure.malformed))
@@ -865,6 +998,70 @@ public actor ClientConnection {
         let id = nextID
         nextID += 1
         return id
+    }
+}
+
+private struct TerminalPump: Sendable {
+    var data: @Sendable (Data) -> Void
+    var exit: @Sendable (Int32) -> Void
+    var cancel: @Sendable () -> Void
+}
+
+private enum TerminalPumpItem: Sendable {
+    case data(Data)
+    case exit(Int32)
+}
+
+private extension HostSession {
+    func startTerminalPump(session: String) -> TerminalPump {
+        let (stream, continuation) = AsyncStream.makeStream(of: TerminalPumpItem.self, bufferingPolicy: .unbounded)
+        Task {
+            for await item in stream {
+                switch item {
+                case let .data(data):
+                    await self.emitTerminalData(session: session, data: data)
+                case let .exit(code):
+                    await self.emitTerminalExit(session: session, code: code)
+                }
+            }
+        }
+        return TerminalPump(
+            data: { data in
+                guard !data.isEmpty else { return }
+                continuation.yield(.data(data))
+            },
+            exit: { code in
+                continuation.yield(.exit(code))
+                continuation.finish()
+            },
+            cancel: { continuation.finish() }
+        )
+    }
+
+    func emitTerminalData(session: String, data: Data) async {
+        guard !closed, !data.isEmpty else { return }
+        var header = Header()
+        header.op = Op.termData
+        header.session = session
+        try? await send(WireMessage(kind: .event, header: header, body: data))
+    }
+
+    func emitTerminalExit(session: String, code: Int32) async {
+        guard !closed else { return }
+        var header = Header()
+        header.op = Op.termExit
+        header.session = session
+        header.exit = Int(code)
+        try? await send(WireMessage(kind: .event, header: header))
+        terminalIDs.removeAll { $0 == session }
+    }
+
+    func suspendLiveTerminals() async {
+        let ids = terminalIDs
+        terminalIDs.removeAll()
+        for id in ids {
+            await server.suspendTerminal(id: id)
+        }
     }
 }
 

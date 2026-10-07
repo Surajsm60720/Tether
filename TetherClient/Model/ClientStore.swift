@@ -6,6 +6,15 @@ import SwiftData
 import TetherCore
 import UIKit
 
+/// The live agent screen. A class so publishing a new frame does not copy every cell.
+final class AgentSurface {
+    var screen: VTScreen
+
+    init(screen: VTScreen) {
+        self.screen = screen
+    }
+}
+
 @MainActor
 @Observable
 final class ClientStore {
@@ -45,6 +54,15 @@ final class ClientStore {
     var monitorMessage: String?
     var history: [String] = []
     var historyIndex = 0
+    var agentProgram: String?
+    /// Bumps when the live screen should be drawn again. The screen itself stays in `agentSurface` so SwiftUI does not copy it on every update.
+    var agentFrame = 0
+    var agentSurface: AgentSurface?
+    var agentExited = false
+    var agentExitCode = 0
+    var agentError: String?
+    var agentReceived = false
+    var agentPaused = false
     var deviceName: String
     var demoMode: Bool
     var fontSize: Double
@@ -80,6 +98,24 @@ final class ClientStore {
     private var pendingPath = "/"
     private var thumbnailCache: [String: Data] = [:]
     private let deviceID: String
+    private var agentLine: String?
+    private var agentSessionID: String?
+    private var agentColumns = 80
+    private var agentRows = 24
+    private var agentOpenTask: Task<Void, Never>?
+    private var terminalEpoch = 0
+    private var terminalBusy = false
+    private var agentPending = Data()
+    private var agentGeneration = 0
+    private var agentFlushScheduled = false
+    private var agentLastPaint = ContinuousClock.now.advanced(by: .seconds(-5))
+    private var agentWriteFailures = 0
+    private var agentEarly: [String: Data] = [:]
+    private var agentEarlyExit: [String: Int] = [:]
+    private var agentOutbound = Data()
+    private var agentWriteScheduled = false
+    private var agentWriteChain: Task<Void, Never> = Task {}
+    private var agentHostID: String?
 
     init(context: ModelContext, preview: Bool = false) {
         self.context = context
@@ -92,6 +128,7 @@ final class ClientStore {
         reloadPaired()
         reloadRemote()
         refreshCacheSize()
+        restoreAgent()
         if preview { return }
         if !defaults.bool(forKey: "didAcceptPrimer") {
             showPrimer = true
@@ -189,10 +226,7 @@ final class ClientStore {
                 deviceName: deviceName,
                 mode: .session(hostId: dial.hostId, key: SymmetricKey(data: keyData))
             )
-            await session.setDisconnectHandler { [weak self] in
-                Task { @MainActor in self?.handleDisconnect() }
-            }
-            connection = session
+            await attach(session)
             hostId = dial.hostId
             hostName = await session.hostName
             connected = true
@@ -204,10 +238,13 @@ final class ClientStore {
                 touch(saved.id)
             }
             shares = try await session.shares()
-            path = "/"
-            terminalCWD = "/"
-            terminalLines = [TermLine(text: L10n.termWelcome, kind: .dim)]
+            if agentProgram == nil {
+                path = "/"
+                terminalCWD = "/"
+                terminalLines = [TermLine(text: L10n.termWelcome, kind: .dim)]
+            }
             try await refresh()
+            await resumeAgentIfNeeded(host: dial.hostId)
         } catch {
             await stream.close()
         }
@@ -302,10 +339,7 @@ final class ClientStore {
                 deviceName: deviceName,
                 mode: .session(hostId: item.id, key: SymmetricKey(data: keyData))
             )
-            await session.setDisconnectHandler { [weak self] in
-                Task { @MainActor in self?.handleDisconnect() }
-            }
-            connection = session
+            await attach(session)
             hostId = item.id
             hostName = await session.hostName
             connected = true
@@ -317,10 +351,11 @@ final class ClientStore {
             shares = try await session.shares()
             if !restoring {
                 path = "/"
-                terminalCWD = "/"
+                if agentProgram == nil { terminalCWD = "/" }
                 terminalLines = [TermLine(text: L10n.termWelcome, kind: .dim)]
             }
             try await refresh()
+            await resumeAgentIfNeeded(host: item.id)
         } catch {
             await stream.close()
             reconnecting = false
@@ -360,10 +395,7 @@ final class ClientStore {
                 throw ProtocolFailure(code: .internalError, message: "Couldn't save the pairing on this iPhone.")
             }
             savePaired(id: id, name: name)
-            await session.setDisconnectHandler { [weak self] in
-                Task { @MainActor in self?.handleDisconnect() }
-            }
-            connection = session
+            await attach(session)
             hostId = id
             hostName = name
             connected = true
@@ -393,11 +425,18 @@ final class ClientStore {
         intentionalDisconnect = true
         reconnectTask?.cancel()
         let current = connection
+        let session = agentSessionID
         connection = nil
         connected = false
         offline = false
         reconnecting = false
-        Task { await current?.close() }
+        clearAgent()
+        Task {
+            if let session {
+                await current?.closeTerminal(session: session)
+            }
+            await current?.close()
+        }
     }
 
     func refresh() async throws {
@@ -510,11 +549,11 @@ final class ClientStore {
         return saved
     }
 
-    private func listFolder(_ path: String) async -> [FileEntry] {
+    private func listFolder(_ path: String, includeHidden: Bool = false) async -> [FileEntry] {
         if let demoFiles, let virtual = try? VirtualPath.parse(path) {
-            return (try? await demoFiles.list(path: virtual, offset: 0, limit: 1000, includeHidden: false)) ?? []
+            return (try? await demoFiles.list(path: virtual, offset: 0, limit: 1000, includeHidden: includeHidden)) ?? []
         }
-        return (try? await connection?.list(path: path)) ?? []
+        return (try? await connection?.list(path: path, includeHidden: includeHidden)) ?? []
     }
 
     @discardableResult
@@ -751,6 +790,17 @@ final class ClientStore {
     func runTerminal(_ line: String) async {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
+        if let program = AgentPrograms.programName(in: trimmed) {
+            history.append(trimmed)
+            historyIndex = history.count
+            terminalLines.append(TermLine(text: prompt + trimmed, kind: .input))
+            guard connection != nil, demoFiles == nil else {
+                terminalLines.append(TermLine(text: L10n.agentNeedsMac(AgentPrograms.displayName(program)), kind: .error))
+                return
+            }
+            beginAgent(line: trimmed, program: program)
+            return
+        }
         history.append(trimmed)
         historyIndex = history.count
         terminalLines.append(TermLine(text: prompt + trimmed, kind: .input))
@@ -761,6 +811,9 @@ final class ClientStore {
         if trimmed == "exit" {
             return
         }
+        let epoch = terminalEpoch
+        terminalBusy = true
+        defer { if epoch == terminalEpoch { terminalBusy = false } }
         do {
             let result: TerminalResult
             if let demoFiles {
@@ -773,6 +826,7 @@ final class ClientStore {
                 terminalLines.append(TermLine(text: "Not connected.", kind: .error))
                 return
             }
+            guard epoch == terminalEpoch else { return }
             terminalCWD = result.cwd
             appendOutput(result.stdout, kind: .output)
             appendOutput(result.stderr, kind: .error)
@@ -780,8 +834,96 @@ final class ClientStore {
                 await perform(action)
             }
         } catch {
+            guard epoch == terminalEpoch else { return }
             terminalLines.append(TermLine(text: (error as? ProtocolFailure)?.message ?? "Couldn't run that.", kind: .error))
         }
+    }
+
+    func completeTerminalLine(_ line: String) async -> (line: String, hint: String) {
+        let request = LineCompletion.request(line: line, cwd: terminalCWD)
+        let names: [CompletionName]
+        if request.listsFiles {
+            let entries = await listFolder(request.directory, includeHidden: request.prefix.hasPrefix("."))
+            names = entries.map { CompletionName(name: $0.name, isDirectory: $0.kind == .dir) }
+        } else {
+            names = []
+        }
+        let outcome = LineCompletion.complete(
+            line: line,
+            request: request,
+            names: names,
+            commands: TerminalEngine.commandNames
+        )
+        return (outcome.line, outcome.hint)
+    }
+
+    func interruptTerminal() {
+        guard terminalBusy else { return }
+        terminalEpoch += 1
+        terminalBusy = false
+        terminalLines.append(TermLine(text: "^C", kind: .dim))
+    }
+
+    func clearTerminal() {
+        terminalLines = []
+    }
+
+    func noteAgentLayout(columns: Int, rows: Int) {
+        guard agentProgram != nil, !agentExited else { return }
+        let columns = min(200, max(2, columns))
+        let rows = min(80, max(2, rows))
+        let changed = agentSurface == nil || columns != agentColumns || rows != agentRows
+        agentColumns = columns
+        agentRows = rows
+        if let surface = agentSurface {
+            if changed {
+                surface.screen.resize(columns: columns, rows: rows)
+                agentFrame += 1
+            }
+        } else {
+            agentSurface = AgentSurface(screen: VTScreen(columns: columns, rows: rows))
+            agentFrame += 1
+            drainAgentPending()
+        }
+        if let id = agentSessionID {
+            guard changed else { return }
+            Task { try? await self.connection?.resizeTerminal(session: id, columns: columns, rows: rows) }
+            return
+        }
+        guard agentOpenTask == nil else { return }
+        agentOpenTask = Task { await self.openAgentSession() }
+    }
+
+    func sendAgentInput(_ input: VTInput) {
+        guard !agentExited else { return }
+        let screen = agentSurface?.screen ?? VTScreen(columns: agentColumns, rows: agentRows)
+        let data = VTKeys.encode(input, applicationCursor: screen.applicationCursorKeys, bracketedPaste: screen.bracketedPaste)
+        guard !data.isEmpty else { return }
+        agentWriteFailures = 0
+        agentOutbound.append(data)
+        guard agentSessionID != nil else { return }
+        scheduleAgentWrite()
+    }
+
+    func finishAgent() async {
+        agentOpenTask?.cancel()
+        agentOpenTask = nil
+        let program = agentProgram
+        let text = agentSurface?.screen.plainText() ?? ""
+        let code = agentExitCode
+        let error = agentError
+        if let id = agentSessionID {
+            await connection?.closeTerminal(session: id)
+        }
+        clearAgent()
+        guard let program else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { appendOutput(trimmed + "\n", kind: .output) }
+        if let error {
+            terminalLines.append(TermLine(text: error, kind: .error))
+        }
+        let suffix = code == 0 ? "" : " (\(code))"
+        terminalLines.append(TermLine(text: "\(AgentPrograms.displayName(program)) ended\(suffix)", kind: .dim))
     }
 
     func thumbnail(for entry: FileEntry) async -> Data? {
@@ -853,7 +995,7 @@ final class ClientStore {
     }
 
     func beginBackgroundTaskIfNeeded() -> UIBackgroundTaskIdentifier {
-        guard !activeTransfers.isEmpty else { return .invalid }
+        guard !activeTransfers.isEmpty || (agentProgram != nil && !agentExited) else { return .invalid }
         var token: UIBackgroundTaskIdentifier = .invalid
         token = UIApplication.shared.beginBackgroundTask {
             Task { @MainActor in
@@ -868,6 +1010,235 @@ final class ClientStore {
     }
 
     var prompt: String { "\(hostName.isEmpty ? "mac" : hostName):\(terminalCWD) $ " }
+
+    private func attach(_ session: ClientConnection) async {
+        await session.setDisconnectHandler { [weak self] in
+            Task { @MainActor in self?.handleDisconnect() }
+        }
+        await session.setEventHandler { [weak self] message in
+            Task { @MainActor in self?.handleAgentEvent(message) }
+        }
+        connection = session
+    }
+
+    private func beginAgent(line: String, program: String) {
+        agentOpenTask?.cancel()
+        agentOpenTask = nil
+        agentLine = line
+        agentProgram = program
+        agentHostID = hostId
+        agentSessionID = nil
+        agentPaused = false
+        UserDefaults.standard.removeObject(forKey: "agent.session")
+        agentGeneration += 1
+        agentFlushScheduled = false
+        agentLastPaint = ContinuousClock.now.advanced(by: .seconds(-5))
+        agentSurface = nil
+        agentExited = false
+        agentExitCode = 0
+        agentError = nil
+        agentReceived = false
+        agentPending.removeAll()
+        agentEarly.removeAll()
+        agentEarlyExit.removeAll()
+        agentOutbound.removeAll()
+        agentColumns = 80
+        agentRows = 24
+    }
+
+    private func openAgentSession() async {
+        defer { agentOpenTask = nil }
+        guard let connection, let line = agentLine, agentSessionID == nil, agentProgram != nil else { return }
+        let columns = agentColumns
+        let rows = agentRows
+        do {
+            let id = try await connection.openTerminal(line: line, cwd: terminalCWD, columns: columns, rows: rows)
+            guard agentProgram != nil else {
+                await connection.closeTerminal(session: id)
+                return
+            }
+            agentSessionID = id
+            rememberAgent()
+            if let early = agentEarly.removeValue(forKey: id) {
+                applyAgentBytes(early)
+            }
+            if let code = agentEarlyExit.removeValue(forKey: id) {
+                agentExitCode = code
+                agentExited = true
+            }
+            if !agentExited, (agentColumns != columns || agentRows != rows) {
+                try? await connection.resizeTerminal(session: id, columns: agentColumns, rows: agentRows)
+            }
+            scheduleAgentWrite()
+        } catch {
+            agentExited = true
+            agentError = (error as? ProtocolFailure)?.message ?? "Couldn't open a terminal on this Mac."
+        }
+    }
+
+    private func handleAgentEvent(_ message: WireMessage) {
+        guard let id = message.header.session else { return }
+        switch message.header.op {
+        case Op.termData:
+            if id == agentSessionID {
+                applyAgentBytes(message.body)
+            } else if agentSessionID == nil, agentProgram != nil {
+                var existing = agentEarly[id] ?? Data()
+                existing.append(message.body)
+                agentEarly[id] = existing
+            }
+        case Op.termExit:
+            let code = message.header.exit ?? 0
+            if id == agentSessionID {
+                agentExitCode = code
+                agentExited = true
+            } else if agentSessionID == nil, agentProgram != nil {
+                agentEarlyExit[id] = code
+            }
+        default:
+            break
+        }
+    }
+
+    private func applyAgentBytes(_ data: Data) {
+        guard !data.isEmpty else { return }
+        agentReceived = true
+        guard let surface = agentSurface else {
+            agentPending.append(data)
+            return
+        }
+        // Answer cursor queries before keystrokes that arrive while this chunk is on screen.
+        // Programs ask where the cursor is before they accept a Tab completion.
+        let replies = surface.screen.ingest(data)
+        if !replies.isEmpty {
+            var combined = replies
+            combined.append(agentOutbound)
+            agentOutbound = combined
+            scheduleAgentWrite()
+        }
+        scheduleAgentPublish()
+    }
+
+    private func drainAgentPending() {
+        let chunk = agentPending
+        agentPending.removeAll(keepingCapacity: true)
+        guard !chunk.isEmpty else { return }
+        applyAgentBytes(chunk)
+    }
+
+    private func scheduleAgentPublish() {
+        guard !agentFlushScheduled else { return }
+        agentFlushScheduled = true
+        let generation = agentGeneration
+        let burst = self.agentLastPaint.duration(to: ContinuousClock.now) < .milliseconds(35)
+        let delay: Duration = burst ? .milliseconds(40) : .milliseconds(10)
+        Task { @MainActor in
+            try? await Task.sleep(for: delay)
+            guard generation == self.agentGeneration else { return }
+            self.agentFlushScheduled = false
+            guard self.agentSurface != nil else { return }
+            self.agentLastPaint = ContinuousClock.now
+            self.agentFrame += 1
+        }
+    }
+
+    private func scheduleAgentWrite() {
+        guard !agentWriteScheduled else { return }
+        agentWriteScheduled = true
+        let previous = agentWriteChain
+        agentWriteChain = Task { @MainActor in
+            _ = await previous.value
+            try? await Task.sleep(for: .milliseconds(2))
+            self.agentWriteScheduled = false
+            let payload = self.agentOutbound
+            self.agentOutbound.removeAll(keepingCapacity: true)
+            guard !payload.isEmpty, !self.agentExited else { return }
+            if let id = self.agentSessionID, let connection = self.connection {
+                do {
+                    try await connection.writeTerminal(session: id, data: payload)
+                    self.agentWriteFailures = 0
+                } catch {
+                    var combined = payload
+                    combined.append(self.agentOutbound)
+                    self.agentOutbound = combined
+                    self.agentWriteFailures += 1
+                    guard self.agentWriteFailures < 4, !self.agentExited else { return }
+                    try? await Task.sleep(for: .milliseconds(40))
+                    if !self.agentOutbound.isEmpty { self.scheduleAgentWrite() }
+                    return
+                }
+            } else if self.agentProgram != nil {
+                var combined = payload
+                combined.append(self.agentOutbound)
+                self.agentOutbound = combined
+                return
+            }
+            if !self.agentOutbound.isEmpty { self.scheduleAgentWrite() }
+        }
+    }
+
+    private func clearAgent() {
+        agentOpenTask?.cancel()
+        agentOpenTask = nil
+        agentProgram = nil
+        agentLine = nil
+        agentSessionID = nil
+        agentGeneration += 1
+        agentFlushScheduled = false
+        agentLastPaint = ContinuousClock.now.advanced(by: .seconds(-5))
+        agentSurface = nil
+        agentExited = false
+        agentExitCode = 0
+        agentError = nil
+        agentReceived = false
+        agentPending.removeAll()
+        agentEarly.removeAll()
+        agentEarlyExit.removeAll()
+        agentOutbound.removeAll()
+        agentPaused = false
+        agentHostID = nil
+        UserDefaults.standard.removeObject(forKey: "agent.session")
+    }
+
+    private func rememberAgent() {
+        guard let id = agentSessionID, let program = agentProgram, let line = agentLine else { return }
+        UserDefaults.standard.set(
+            ["id": id, "program": program, "line": line, "cwd": terminalCWD, "host": agentHostID ?? hostId],
+            forKey: "agent.session"
+        )
+    }
+
+    private func restoreAgent() {
+        guard let payload = UserDefaults.standard.dictionary(forKey: "agent.session") as? [String: String],
+              let id = payload["id"], let program = payload["program"], let line = payload["line"],
+              let host = payload["host"] else { return }
+        agentSessionID = id
+        agentProgram = program
+        agentLine = line
+        agentHostID = host
+        agentPaused = true
+        agentReceived = true
+        if let cwd = payload["cwd"], !cwd.isEmpty { terminalCWD = cwd }
+        agentSurface = AgentSurface(screen: VTScreen(columns: agentColumns, rows: agentRows))
+        agentFrame += 1
+    }
+
+    private func resumeAgentIfNeeded(host: String) async {
+        guard agentHostID == host, let connection, let id = agentSessionID, agentProgram != nil, !agentExited else { return }
+        do {
+            try await connection.resumeTerminal(session: id)
+            try? await connection.resizeTerminal(session: id, columns: agentColumns, rows: agentRows)
+            agentPaused = false
+            rememberAgent()
+            scheduleAgentWrite()
+        } catch {
+            agentPaused = false
+            agentExited = true
+            agentSessionID = nil
+            UserDefaults.standard.removeObject(forKey: "agent.session")
+            agentError = (error as? ProtocolFailure)?.message ?? "That session on your Mac has ended."
+        }
+    }
 
     private func enableDemo() {
         let files = MemoryFileProvider()
@@ -893,6 +1264,7 @@ final class ClientStore {
 
     private func handleDisconnect() {
         connection = nil
+        if agentProgram != nil, !agentExited { agentPaused = true }
         guard connected, !intentionalDisconnect else { return }
         offline = true
         reconnecting = true

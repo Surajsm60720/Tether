@@ -21,6 +21,10 @@ enum L10n {
     static var readOnly: String { text("files.readonly", "This folder is read-only.") }
     static var keepOpen: String { text("transfers.keepOpen", "Keep Tether open while transferring.") }
     static var termWelcome: String { text("term.welcome", "Tether terminal · type 'help' for commands") }
+
+    static func agentNeedsMac(_ name: String) -> String {
+        "\(name) runs on your Mac. Connect to it, then try again."
+    }
     static var files: String { text("tab.files", "Files") }
     static var terminal: String { text("tab.terminal", "Terminal") }
     static var transfers: String { text("tab.transfers", "Transfers") }

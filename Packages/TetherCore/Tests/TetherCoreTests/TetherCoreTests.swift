@@ -390,7 +390,7 @@ import Testing
     await second.close()
 }
 
-private final class TestHost: HostServing, @unchecked Sendable {
+final class TestHost: HostServing, @unchecked Sendable {
     let hostId = "host0001"
     var offer: PairingOffer?
     let filesProvider: MemoryFileProvider
@@ -428,6 +428,34 @@ private final class TestHost: HostServing, @unchecked Sendable {
     func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void) {}
     func ignoreConnection(for deviceId: String) {}
     func runShell(line: String, cwd: String) async -> TerminalResult? { nil }
+    var terminalWrites: [Data] = []
+    func openTerminal(
+        id: String,
+        line: String,
+        cwd: String,
+        columns: Int,
+        rows: Int,
+        onData: @escaping @Sendable (Data) -> Void,
+        onExit: @escaping @Sendable (Int32) -> Void
+    ) async throws {
+        onData(Data("ready\r\n".utf8))
+        onExit(0)
+    }
+    func writeTerminal(id: String, data: Data) async {
+        recordWrite(data)
+    }
+
+    private func recordWrite(_ data: Data) {
+        lock.lock()
+        terminalWrites.append(data)
+        lock.unlock()
+    }
+    func resizeTerminal(id: String, columns: Int, rows: Int) async {}
+    func closeTerminal(id: String) async {}
+    func suspendTerminal(id: String) async {}
+    func resumeTerminal(id: String, onData: @escaping @Sendable (Data) -> Void, onExit: @escaping @Sendable (Int32) -> Void) async -> Bool {
+        false
+    }
 }
 
 @Test func remoteAddressAndSetupRoundTrip() throws {

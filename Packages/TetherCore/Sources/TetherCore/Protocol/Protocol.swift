@@ -19,6 +19,13 @@ public enum Op {
     public static let writeCommit = "write.commit"
     public static let writeAbort = "write.abort"
     public static let termExec = "term.exec"
+    public static let termOpen = "term.open"
+    public static let termInput = "term.input"
+    public static let termResize = "term.resize"
+    public static let termClose = "term.close"
+    public static let termResume = "term.resume"
+    public static let termData = "term.data"
+    public static let termExit = "term.exit"
     public static let sysInfo = "sys.info"
     public static let sysStats = "sys.stats"
     public static let auth = "auth"
@@ -224,6 +231,10 @@ public struct Header: Codable, Sendable, Equatable {
     public var all: Bool?
     public var systemProfile: SystemProfile?
     public var systemStats: SystemStats?
+    /// Live terminal session id.
+    public var session: String?
+    public var columns: Int?
+    public var rows: Int?
 
     public init() {}
 }
