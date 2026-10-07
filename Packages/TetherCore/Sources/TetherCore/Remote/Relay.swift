@@ -148,7 +148,16 @@ public final class RelayServer: @unchecked Sendable {
         let io = ConnectionIO(connection)
         do {
             try await io.start()
-            let line = try await io.readLine(limit: 200)
+            let line = try await withThrowingTaskGroup(of: String.self) { group in
+                group.addTask { try await io.readLine(limit: 200) }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(15))
+                    throw RelayError.unreachable
+                }
+                guard let first = try await group.next() else { throw RelayError.unreachable }
+                group.cancelAll()
+                return first
+            }
             let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
             guard parts.count == 2 else {
                 try? await io.send(Data("NO\n".utf8))
@@ -163,8 +172,7 @@ public final class RelayServer: @unchecked Sendable {
             }
             let key = Base64URL.encode(token)
             switch await registry.arrive(kind: kind, token: key, io: io) {
-            case let .wait(replaced):
-                replaced?.cancel()
+            case .wait:
                 do {
                     try await io.send(Data("WAIT\n".utf8))
                     await io.waitUntilClosed()
@@ -178,8 +186,7 @@ public final class RelayServer: @unchecked Sendable {
             case .reject:
                 try? await io.send(Data("NO\n".utf8))
                 io.cancel()
-            case let .bridge(host, client, replaced):
-                replaced?.cancel()
+            case let .bridge(host, client):
                 do {
                     try await host.send(Data("GO\n".utf8))
                     try await client.send(Data("GO\n".utf8))
@@ -201,6 +208,9 @@ public final class RelayServer: @unchecked Sendable {
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await self.forward(from: host, to: client, initial: toClient) }
             group.addTask { await self.forward(from: client, to: host, initial: toHost) }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(30 * 60))
+            }
             _ = await group.next()
             group.cancelAll()
         }
@@ -385,10 +395,10 @@ private actor RelayRegistry {
     }
 
     enum Arrival: Sendable {
-        case wait(ConnectionIO?)
+        case wait
         case busy
         case reject
-        case bridge(host: ConnectionIO, client: ConnectionIO, replaced: ConnectionIO?)
+        case bridge(host: ConnectionIO, client: ConnectionIO)
     }
 
     private var slots: [String: Slot] = [:]
@@ -398,29 +408,30 @@ private actor RelayRegistry {
         if slot.busy { return .busy }
         switch kind {
         case "HOST":
-            let replaced = slot.host
+            // Do not let a second HOST steal a waiting slot (token squatting).
+            if slot.host != nil { return .busy }
             slot.host = io
             if let client = slot.client {
                 slot.host = nil
                 slot.client = nil
                 slot.busy = true
                 slots[token] = slot
-                return .bridge(host: io, client: client, replaced: replaced)
+                return .bridge(host: io, client: client)
             }
             slots[token] = slot
-            return .wait(replaced)
+            return .wait
         case "OPEN":
-            let replaced = slot.client
+            if slot.client != nil { return .busy }
             slot.client = io
             if let host = slot.host {
                 slot.host = nil
                 slot.client = nil
                 slot.busy = true
                 slots[token] = slot
-                return .bridge(host: host, client: io, replaced: replaced)
+                return .bridge(host: host, client: io)
             }
             slots[token] = slot
-            return .wait(replaced)
+            return .wait
         default:
             return .reject
         }

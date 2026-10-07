@@ -197,7 +197,7 @@ public struct TerminalEngine: Sendable {
             return fail("ls: invalid path", cwd: cwd)
         }
         do {
-            let entries = try await files.list(path: path, offset: 0, limit: 5000, includeHidden: all)
+            let entries = try await files.list(path: path, offset: 0, limit: TetherCoreInfo.maxListEntries, includeHidden: all)
             if entries.isEmpty { return TerminalResult(cwd: cwd.string) }
             let lines = entries.map { entry -> String in
                 let name = entry.kind == .dir ? entry.name + "/" : entry.name

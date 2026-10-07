@@ -138,6 +138,13 @@ public final class MemoryFileProvider: FileProvider, @unchecked Sendable {
         }
     }
 
+    public func abortAllUploads() async {
+        withState {
+            uploads.removeAll()
+            return ()
+        }
+    }
+
     private func entries(at path: VirtualPath, includeHidden: Bool) throws -> [FileEntry] {
         if path.isRoot {
             return shares.keys.sorted().map { name in

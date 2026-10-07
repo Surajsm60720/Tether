@@ -459,8 +459,13 @@ final class HostStore {
     private func startListening(peerToPeer: Bool) {
         listenerReady = false
         listener.onConnection = { [runtime] connection in
+            guard runtime.tryAdmitConnection() else {
+                connection.cancel()
+                return
+            }
             let stream = NWByteStream(connection: connection)
             Task {
+                defer { runtime.releaseConnection() }
                 do {
                     try await stream.start()
                     await HostConnection.serve(stream: stream, remote: stream.remoteDescription, server: runtime)
@@ -549,7 +554,12 @@ final class HostStore {
                         await stream.close()
                         return
                     }
-                    await HostConnection.serve(stream: stream, remote: "relay-\(UUID().uuidString)", server: runtime)
+                    guard runtime.tryAdmitConnection() else {
+                        await stream.close()
+                        throw RelayError.unreachable
+                    }
+                    defer { runtime.releaseConnection() }
+                    await HostConnection.serve(stream: stream, remote: "relay", server: runtime)
                     if Task.isCancelled { return }
                     let stillCurrent = await MainActor.run { HostStore.shared?.relayGeneration == generation }
                     guard stillCurrent else { return }
@@ -679,6 +689,15 @@ final class HostRuntime: HostServing, @unchecked Sendable {
 
     func hostName() -> String { sync { macName } }
     func currentOffer() -> PairingOffer? { sync { offer } }
+    func takeOffer() -> PairingOffer? {
+        let taken: PairingOffer? = sync {
+            let value = offer
+            offer = nil
+            return value
+        }
+        if taken != nil { onEvent?(.offerConsumed) }
+        return taken
+    }
     func consumeOffer() {
         sync { offer = nil }
         onEvent?(.offerConsumed)
@@ -728,23 +747,15 @@ final class HostRuntime: HostServing, @unchecked Sendable {
     func files() -> any FileProvider { provider }
 
     func runShell(line: String, cwd: String) async -> TerminalResult? {
-        let virtual = (try? VirtualPath.parse(cwd)) ?? .root
-        let directory: URL
-        if virtual.isRoot {
-            directory = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        } else if let url = try? provider.fileURL(for: virtual) {
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
-                directory = url
-            } else {
-                directory = url.deletingLastPathComponent()
-            }
-        } else {
-            return TerminalResult(stderr: "tether: that folder isn't available.\n", cwd: cwd, exit: 1)
-        }
-        _ = directory.startAccessingSecurityScopedResource()
-        return await ShellRunner.run(line: line, directory: directory, cwd: cwd)
+        _ = line
+        _ = cwd
+        // v1.1: no general Mac shell for paired phones. Virtual commands only.
+        return nil
     }
+
+    let admission = ConnectionAdmission()
+    func tryAdmitConnection() -> Bool { admission.tryAdmit() }
+    func releaseConnection() { admission.release() }
 
     func thumbnail(virtualPath: String, maxPixel: Int) async -> Data? {
         guard let path = try? VirtualPath.parse(virtualPath), let url = try? provider.fileURL(for: path) else { return nil }

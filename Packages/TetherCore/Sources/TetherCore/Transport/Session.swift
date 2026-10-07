@@ -20,6 +20,8 @@ public protocol HostServing: Sendable {
     var hostId: String { get }
     func hostName() -> String
     func currentOffer() -> PairingOffer?
+    /// Atomically returns and clears the active pairing offer.
+    func takeOffer() -> PairingOffer?
     func consumeOffer()
     func deviceKey(for deviceId: String) -> SymmetricKey?
     func rememberDevice(id: String, name: String, key: SymmetricKey)
@@ -33,7 +35,7 @@ public protocol HostServing: Sendable {
     var abuse: AbuseGuard { get }
     func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void)
     func ignoreConnection(for deviceId: String)
-    /// Runs a command the virtual interpreter does not implement, on the Mac.
+    /// Reserved. v1.1 does not run a general Mac shell for the phone; return nil.
     func runShell(line: String, cwd: String) async -> TerminalResult?
 }
 
@@ -96,7 +98,7 @@ private actor HostSession {
     func run() async {
         var announced = false
         do {
-            let identity = try await handshake()
+            let identity = try await handshakeWithTimeout()
             deviceId = identity.id
             deviceName = identity.name
             announced = true
@@ -118,16 +120,38 @@ private actor HostSession {
             server.disconnected(deviceId: deviceId)
             server.note("\(deviceName) disconnected")
         }
+        await server.files().abortAllUploads()
         await stream.close()
     }
 
+    private func handshakeWithTimeout() async throws -> (id: String, name: String) {
+        try await withThrowingTaskGroup(of: (id: String, name: String).self) { group in
+            group.addTask { try await self.handshake() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(TetherCoreInfo.handshakeTimeoutSeconds))
+                throw ProtocolFailure.timeout
+            }
+            guard let first = try await group.next() else {
+                throw ProtocolFailure.timeout
+            }
+            group.cancelAll()
+            return first
+        }
+    }
+
     private func handshake() async throws -> (id: String, name: String) {
+        if server.abuse.isHandshakeLocked() {
+            await reject(ProtocolFailure.locked)
+            throw ProtocolFailure.locked
+        }
         let hello = try await nextMessage()
         guard hello.header.op == Op.clientHello, hello.header.v == TetherCoreInfo.protocolVersion else {
+            server.abuse.recordHandshakeFailure()
             await reject(ProtocolFailure(code: .badRequest, message: "This Mac speaks a different Tether version."))
             throw ProtocolFailure.malformed
         }
         guard let deviceId = hello.header.deviceId, !deviceId.isEmpty, let nonceC = hello.header.nonceC, nonceC.count == 32 else {
+            server.abuse.recordHandshakeFailure()
             await reject(ProtocolFailure.malformed)
             throw ProtocolFailure.malformed
         }
@@ -147,6 +171,7 @@ private actor HostSession {
             secret = offer.secret(for: material)
         case .session:
             guard let key = server.deviceKey(for: deviceId) else {
+                server.abuse.recordHandshakeFailure()
                 await reject(ProtocolFailure.revoked)
                 throw ProtocolFailure.revoked
             }
@@ -167,12 +192,13 @@ private actor HostSession {
         do {
             auth = try await nextMessage()
         } catch {
-            server.abuse.recordHandshakeFailure(remote)
+            server.abuse.recordHandshakeFailure()
             if mode == .pair { server.abuse.recordPairingFailure() }
             throw error
         }
         guard auth.header.op == Op.auth else {
-            server.abuse.recordHandshakeFailure(remote)
+            server.abuse.recordHandshakeFailure()
+            if mode == .pair { server.abuse.recordPairingFailure() }
             throw ProtocolFailure(code: .unauthorized, message: "Couldn't verify the connection.")
         }
 
@@ -197,6 +223,12 @@ private actor HostSession {
         try await send(WireMessage(kind: .response, header: ok))
 
         if mode == .pair {
+            // Claim the offer only after auth so failed attempts cannot burn the QR.
+            // A second concurrent peer that authenticates later gets nil and expires.
+            guard server.takeOffer() != nil else {
+                await reject(ProtocolFailure.expired)
+                throw ProtocolFailure.expired
+            }
             let request = try await nextMessage()
             guard request.header.op == Op.pairRequest else { throw ProtocolFailure.malformed }
             let name = request.header.deviceName ?? hello.header.deviceName ?? "iPhone"
@@ -208,7 +240,6 @@ private actor HostSession {
             }
             let key = SymmetricKey.random()
             server.rememberDevice(id: deviceId, name: name, key: key)
-            server.consumeOffer()
             var done = Header()
             done.op = Op.pairComplete
             done.requestId = request.header.requestId
@@ -309,8 +340,12 @@ private actor HostSession {
             let cwd = message.header.cwd ?? "/"
             let line = message.header.line ?? ""
             let result: TerminalResult
-            if TerminalSyntax.requiresShell(line), let shell = await server.runShell(line: line, cwd: cwd) {
-                result = shell
+            if TerminalSyntax.requiresShell(line) {
+                result = TerminalResult(
+                    stderr: "tether: shell operators are not available. Use the built-in commands.\n",
+                    cwd: cwd,
+                    exit: 126
+                )
             } else {
                 let shares = await files.shares()
                 let profile = SystemProbe.profile(hostName: server.hostName(), shareCount: shares.count)
@@ -320,12 +355,7 @@ private actor HostSession {
                     device: deviceName.isEmpty ? "this iPhone" : deviceName,
                     profile: profile
                 )
-                let virtual = await terminal.execute(line: line, cwd: cwd, files: files, context: context)
-                if virtual.exit == 127, let shell = await server.runShell(line: line, cwd: cwd) {
-                    result = shell
-                } else {
-                    result = virtual
-                }
+                result = await terminal.execute(line: line, cwd: cwd, files: files, context: context)
             }
             header.stdout = result.stdout
             header.stderr = result.stderr

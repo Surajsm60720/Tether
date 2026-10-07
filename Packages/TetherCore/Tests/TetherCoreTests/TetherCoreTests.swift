@@ -212,6 +212,23 @@ import Testing
     #expect(guardRail.recordPairingFailure(now: now) == true)
     #expect(guardRail.isPairingLocked(now: now.addingTimeInterval(10)))
     #expect(!guardRail.isPairingLocked(now: now.addingTimeInterval(6 * 60)))
+
+    let handshakes = AbuseGuard()
+    for _ in 0..<10 {
+        #expect(handshakes.recordHandshakeFailure(now: now) == false)
+    }
+    #expect(handshakes.recordHandshakeFailure(now: now) == true)
+    #expect(handshakes.isHandshakeLocked(now: now.addingTimeInterval(10)))
+    #expect(!handshakes.isHandshakeLocked(now: now.addingTimeInterval(3 * 60)))
+}
+
+@Test func connectionAdmissionCapsPendingSockets() {
+    let gate = ConnectionAdmission(limit: 2)
+    #expect(gate.tryAdmit())
+    #expect(gate.tryAdmit())
+    #expect(!gate.tryAdmit())
+    gate.release()
+    #expect(gate.tryAdmit())
 }
 
 @Test func memoryFilesystemAndTerminal() async throws {
@@ -269,6 +286,30 @@ import Testing
     await #expect(throws: PathError.self) {
         _ = try await provider.read(path: try VirtualPath.parse("/share/../../secret.txt"), offset: 0, length: 10)
     }
+    await #expect(throws: ProtocolFailure.self) {
+        try await provider.writeWholeFile(
+            path: try VirtualPath.parse("/share/escape"),
+            data: Data("pwned".utf8),
+            append: true
+        )
+    }
+    #expect(String(data: try Data(contentsOf: outside), encoding: .utf8) == "hidden")
+}
+
+@Test func diskUploadRejectsOutOfRangeChunkAndAbortAll() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("tether-upload-\(UUID().uuidString)", isDirectory: true)
+    let share = root.appendingPathComponent("share", isDirectory: true)
+    try FileManager.default.createDirectory(at: share, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let provider = DiskFileProvider(shares: [MountedShare(name: "share", root: share, writable: true)])
+    let id = try await provider.beginUpload(path: try VirtualPath.parse("/share/file.bin"), size: 8, overwrite: true)
+    await #expect(throws: ProtocolFailure.self) {
+        _ = try await provider.uploadChunk(id: id, offset: 4, data: Data(repeating: 1, count: 8))
+    }
+    _ = try await provider.uploadChunk(id: id, offset: 0, data: Data(repeating: 2, count: 4))
+    await provider.abortAllUploads()
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: share.path)
+    #expect(!leftovers.contains(where: { $0.hasPrefix(".tether-upload-") }))
 }
 
 @Test func pairListReadWriteOverThePipe() async throws {
@@ -348,6 +389,11 @@ private final class TestHost: HostServing, @unchecked Sendable {
 
     func hostName() -> String { "Studio Mac" }
     func currentOffer() -> PairingOffer? { offer }
+    func takeOffer() -> PairingOffer? {
+        let value = offer
+        offer = nil
+        return value
+    }
     func consumeOffer() { offer = nil }
     func deviceKey(for deviceId: String) -> SymmetricKey? { keys[deviceId] }
     func rememberDevice(id: String, name: String, key: SymmetricKey) { keys[id] = key }

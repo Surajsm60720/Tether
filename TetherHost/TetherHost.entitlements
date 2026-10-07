@@ -14,21 +14,12 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
-	<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
-	<array>
-		<string>/</string>
-	</array>
 	<key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
 	<array>
 		<string>/usr/</string>
 		<string>/bin/</string>
 		<string>/opt/homebrew/</string>
 		<string>/usr/local/</string>
-	</array>
-	<key>com.apple.security.temporary-exception.files.absolute-path.read-write</key>
-	<array>
-		<string>/tmp/</string>
-		<string>/private/tmp/</string>
 	</array>
 </dict>
 </plist>

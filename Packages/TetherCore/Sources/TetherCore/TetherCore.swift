@@ -1,3 +1,4 @@
+import Foundation
 import os
 
 /// Shared, UI-free core used by the Tether host and client apps.
@@ -17,6 +18,14 @@ public enum TetherCoreInfo: Sendable {
     public static let transferPipelineDepth = 8
     /// Largest sealed frame accepted on the wire.
     public static let maxFrameBytes = 1 << 20
+    /// How long an inbound host connection may take to finish the handshake.
+    public static let handshakeTimeoutSeconds: TimeInterval = 15
+    /// Unauthenticated inbound sockets the host will hold at once.
+    public static let maxPendingHandshakes = 8
+    /// Directory listing page size kept well under `maxFrameBytes`.
+    public static let maxListEntries = 400
+    /// Hard cap on bytes buffered from a host shell (if one is ever used).
+    public static let shellOutputCap = 256 * 1024
 }
 
 public enum TetherLog {

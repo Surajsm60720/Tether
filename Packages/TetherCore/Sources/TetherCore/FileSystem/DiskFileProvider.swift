@@ -40,15 +40,21 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
             throw ProtocolFailure(code: .badRequest, message: "That item is not a folder.")
         }
         let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
-        let urls = try FileManager.default.contentsOfDirectory(at: located.url, includingPropertiesForKeys: Array(Self.metaKeys), options: options)
-        let sorted = urls.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-        let entries = sorted.compactMap { url -> FileEntry? in
-            if url.lastPathComponent.hasPrefix(".tether-upload-") { return nil }
-            return entry(for: url, budget: budget, includeHidden: includeHidden)
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: located.url,
+            includingPropertiesForKeys: Array(Self.metaKeys),
+            options: options
+        )
+        let sorted = urls
+            .filter { !$0.lastPathComponent.hasPrefix(".tether-upload-") }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        let start = min(max(offset, 0), sorted.count)
+        let page = ProviderSupport.clampLimit(limit)
+        let end = min(start + page, sorted.count)
+        // Build entries only for the page we return so huge dirs do not inflate CPU/memory.
+        return sorted[start..<end].compactMap { url in
+            entry(for: url, budget: budget, includeHidden: includeHidden)
         }
-        let start = min(max(offset, 0), entries.count)
-        let end = min(start + ProviderSupport.clampLimit(limit), entries.count)
-        return Array(entries[start..<end])
     }
 
     public func stat(path: VirtualPath) async throws -> FileEntry {
@@ -105,9 +111,13 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
 
     public func uploadChunk(id: String, offset: UInt64, data: Data) async throws -> UInt64 {
         let upload = try takeUpload(id)
+        let end = offset + UInt64(data.count)
+        guard end >= offset, end <= upload.expected else {
+            throw ProtocolFailure(code: .badRequest, message: "That upload chunk is out of range.")
+        }
         try upload.handle.seek(toOffset: offset)
         try upload.handle.write(contentsOf: data)
-        upload.received = max(upload.received, offset + UInt64(data.count))
+        upload.received = max(upload.received, end)
         return upload.received
     }
 
@@ -128,6 +138,18 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
         guard let upload = try? takeUpload(id, remove: true) else { return }
         try? upload.handle.close()
         try? FileManager.default.removeItem(at: upload.tempURL)
+    }
+
+    public func abortAllUploads() async {
+        let pending: [DiskUpload] = sync {
+            let values = Array(uploads.values)
+            uploads.removeAll()
+            return values
+        }
+        for upload in pending {
+            try? upload.handle.close()
+            try? FileManager.default.removeItem(at: upload.tempURL)
+        }
     }
 
     /// Real URL for a virtual path, used by the host for thumbnails. Still rejects escapes.
@@ -172,11 +194,27 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
             current = resolved
         }
         if !leafMustExist, let leaf = relative.last {
-            let next = current.appendingPathComponent(leaf).standardizedFileURL
-            guard Self.contains(next, in: root) else {
+            let next = current.appendingPathComponent(leaf)
+            var isDir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: next.path, isDirectory: &isDir)
+            let candidate: URL
+            if exists {
+                // Resolve existing leaves (including symlinks) so writes cannot follow out of the share.
+                candidate = next.resolvingSymlinksInPath().standardizedFileURL
+            } else {
+                candidate = next.standardizedFileURL
+            }
+            guard Self.contains(candidate, in: root) else {
                 throw ProtocolFailure(code: .outsideShare, message: "That path isn't available.")
             }
-            current = next
+            if exists {
+                // Refuse to write through a symlink / alias that pointed outside before resolve.
+                let values = try? next.resourceValues(forKeys: [.isSymbolicLinkKey, .isAliasFileKey])
+                if values?.isSymbolicLink == true || values?.isAliasFile == true {
+                    throw ProtocolFailure(code: .outsideShare, message: "That path isn't available.")
+                }
+            }
+            current = candidate
         }
         return Location(share: share, url: current)
     }
@@ -250,8 +288,16 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
         guard parent.share.writable else {
             throw ProtocolFailure(code: .readOnly, message: "This folder is read-only.")
         }
-        let url = try locate(path, leafMustExist: false).url
+        let located = try locate(path, leafMustExist: false)
+        let url = located.url
+        guard Self.contains(url.resolvingSymlinksInPath(), in: parent.share.root) else {
+            throw ProtocolFailure(code: .outsideShare, message: "That path isn't available.")
+        }
         if append, FileManager.default.fileExists(atPath: url.path) {
+            let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey, .isAliasFileKey])
+            if values?.isSymbolicLink == true || values?.isAliasFile == true {
+                throw ProtocolFailure(code: .outsideShare, message: "That path isn't available.")
+            }
             let handle = try FileHandle(forWritingTo: url)
             try handle.seekToEnd()
             try handle.write(contentsOf: data)

@@ -353,21 +353,22 @@ public enum KeychainStore {
     }
 }
 
-/// Pairing secrets. The keychain is preferred. A file inside the app's container is the
-/// backup so quitting both apps cannot forget a device the user never revoked.
+/// Pairing and device secrets live in the Keychain only.
+/// A one-time migration still reads the old Application Support mirror, then deletes it.
 public enum PairingSecrets {
     public static func save(service: String, account: String, data: Data) {
         try? KeychainStore.save(service: service, account: account, data: data)
-        write(service: service, account: account, data: data)
+        removeLegacyFile(service: service, account: account)
     }
 
     public static func load(service: String, account: String) -> Data? {
         if let data = try? KeychainStore.load(service: service, account: account), !data.isEmpty {
-            write(service: service, account: account, data: data)
+            removeLegacyFile(service: service, account: account)
             return data
         }
-        if let data = read(service: service, account: account), !data.isEmpty {
+        if let data = readLegacy(service: service, account: account), !data.isEmpty {
             try? KeychainStore.save(service: service, account: account, data: data)
+            removeLegacyFile(service: service, account: account)
             return data
         }
         return nil
@@ -375,18 +376,15 @@ public enum PairingSecrets {
 
     public static func delete(service: String, account: String) {
         KeychainStore.delete(service: service, account: account)
-        try? FileManager.default.removeItem(at: fileURL(service: service, account: account))
+        removeLegacyFile(service: service, account: account)
     }
 
-    private static func write(service: String, account: String, data: Data) {
-        let url = fileURL(service: service, account: account)
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: url, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-    }
-
-    private static func read(service: String, account: String) -> Data? {
+    private static func readLegacy(service: String, account: String) -> Data? {
         try? Data(contentsOf: fileURL(service: service, account: account))
+    }
+
+    private static func removeLegacyFile(service: String, account: String) {
+        try? FileManager.default.removeItem(at: fileURL(service: service, account: account))
     }
 
     private static func fileURL(service: String, account: String) -> URL {
@@ -400,14 +398,24 @@ public enum PairingSecrets {
     }
 }
 
-/// Five failed handshakes per minute per remote, and five failed pairing attempts lock pairing for five minutes.
+/// Global handshake and pairing locks. Counters are not keyed by remote address:
+/// ephemeral source ports and relay UUIDs made per-remote keys ineffective.
 public final class AbuseGuard: @unchecked Sendable {
     private let lock = NSLock()
-    private var handshakes: [String: [Date]] = [:]
+    private var handshakeFailures: [Date] = []
+    private var handshakeLockedUntil: Date?
     private var pairingFailures: [Date] = []
     private var pairingLockedUntil: Date?
 
     public init() {}
+
+    public func isHandshakeLocked(now: Date = Date()) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if let until = handshakeLockedUntil, now < until { return true }
+        handshakeLockedUntil = nil
+        return false
+    }
 
     public func isPairingLocked(now: Date = Date()) -> Bool {
         lock.lock()
@@ -417,14 +425,25 @@ public final class AbuseGuard: @unchecked Sendable {
         return false
     }
 
+    /// Ten failed handshakes in a minute locks all new handshakes for two minutes.
     @discardableResult
-    public func recordHandshakeFailure(_ remote: String, now: Date = Date()) -> Bool {
+    public func recordHandshakeFailure(now: Date = Date()) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        let recent = (handshakes[remote] ?? []).filter { now.timeIntervalSince($0) < 60 }
-        let updated = recent + [now]
-        handshakes[remote] = updated
-        return updated.count > 5
+        handshakeFailures = handshakeFailures.filter { now.timeIntervalSince($0) < 60 } + [now]
+        if handshakeFailures.count > 10 {
+            handshakeLockedUntil = now.addingTimeInterval(2 * 60)
+            handshakeFailures = []
+            return true
+        }
+        return false
+    }
+
+    /// Kept for call-site compatibility; remote is ignored.
+    @discardableResult
+    public func recordHandshakeFailure(_ remote: String, now: Date = Date()) -> Bool {
+        _ = remote
+        return recordHandshakeFailure(now: now)
     }
 
     @discardableResult
@@ -438,5 +457,30 @@ public final class AbuseGuard: @unchecked Sendable {
             return true
         }
         return false
+    }
+}
+
+/// Caps how many unauthenticated inbound connections the host holds at once.
+public final class ConnectionAdmission: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending = 0
+    private let limit: Int
+
+    public init(limit: Int = TetherCoreInfo.maxPendingHandshakes) {
+        self.limit = max(1, limit)
+    }
+
+    public func tryAdmit() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard pending < limit else { return false }
+        pending += 1
+        return true
+    }
+
+    public func release() {
+        lock.lock()
+        defer { lock.unlock() }
+        pending = max(0, pending - 1)
     }
 }

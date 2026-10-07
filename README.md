@@ -1,6 +1,6 @@
 # Tether
 
-Version 1.0.
+Version 1.1.
 
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, and run a terminal against those folders, without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
@@ -126,7 +126,7 @@ These commands are implemented in Tether and only see shared folders. `~` is `/`
 | `clear` | Clear the screen |
 | `exit` | Leave the terminal |
 
-A line Tether does not implement, including a pipeline (`ls | grep pdf`), is run on the Mac with `zsh -c` in the current shared folder, or in your home directory when the working folder is `/`. Standard output and standard error come back as text. The command is stopped after 20 seconds. The terminal does not give that process a screen, a cursor, or a way to keep reading keystrokes, so interactive programs will not behave like they do in Terminal.app.
+As of 1.1, unknown commands and shell operators (`|`, `>`, `;`, and the rest) are rejected. The phone never gets a general Mac shell. Only the built-in commands above run, and they stay inside the folders you shared.
 
 `whoami`, `status`, `fetch`, and `htop` do not shell out. They use system calls on the Mac and the existing encrypted session.
 
@@ -183,8 +183,8 @@ Tether’s threat model is another device on the network, or a stranger who can 
 - Logs use `os.Logger` and mark paths and names private. Tether does not log keys, pairing secrets, or file contents.
 - Remote listening is off until you turn it on. The port is still protected by the pairing handshake. Only a phone you have paired can list or read files.
 - The relay learns that two peers want to meet, and it sees the handshake headers. After the handshake, file and terminal bytes are ciphertext. The relay does not have the device key.
-- The Mac app is sandboxed. It can read and write the folders you choose, plus the temporary file exceptions in `TetherHost/TetherHost.entitlements`. Process listing for the monitor is a sandbox exception (`process-info`). It does not grant the phone a shell.
-- Unknown terminal commands do run `zsh -c` on the Mac, inside the current shared folder when there is one, with a 20 second limit. Treat that as a real command on your Mac user account, not as a pretend shell. Do not pair a phone you do not trust.
+- The Mac app is sandboxed. It can read and write the folders you choose, plus the tool-path exceptions in `TetherHost/TetherHost.entitlements`. Process listing for the monitor is a sandbox exception (`process-info`). The phone does not get a general Mac shell.
+- Inbound connections are capped and must finish the handshake within a short deadline. Failed handshakes and pairing codes are rate-limited.
 
 A compromised Mac or a compromised iPhone is outside this design. So is a full interactive shell. That would be a different mode, off by default, and it is not in this build.
 
@@ -223,7 +223,20 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 
 ## Changelog
 
-Version 1.0 is the first release. The same notes are in Settings → What's new on both the Mac and the iPhone.
+The same notes are in Settings → What's new on both the Mac and the iPhone.
+
+### 1.1
+
+Security patch over 1.0. Until remaining hardening items are done, releases stay on the 1.x patch line (1.1, 1.2, …).
+
+- Phone terminal is virtual-only: no Mac `zsh` fall-through.
+- Caps and timeouts on inbound handshakes; global lock after repeated handshake failures.
+- Device keys Keychain-only (legacy on-disk mirrors cleared).
+- Safer uploads (abort on disconnect, chunk bounds) and symlink write rejection.
+- Paginated listings under the frame size limit; relay prelude timeouts.
+- Narrower host sandbox (no whole-home temporary exception).
+
+### 1.0
 
 - Pair an iPhone with a Mac by QR code or a typed code, then reconnect without a password.
 - Browse, preview, download, and upload files in the folders you choose to share.

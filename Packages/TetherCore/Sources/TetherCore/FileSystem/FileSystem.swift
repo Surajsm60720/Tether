@@ -121,6 +121,7 @@ public protocol FileProvider: Sendable {
     func uploadChunk(id: String, offset: UInt64, data: Data) async throws -> UInt64
     func commitUpload(id: String) async throws
     func abortUpload(id: String) async throws
+    func abortAllUploads() async
     func makeDirectory(path: VirtualPath, createParents: Bool) async throws
     func remove(path: VirtualPath, recursive: Bool) async throws
     func moveItem(from: VirtualPath, to: VirtualPath) async throws
@@ -129,6 +130,8 @@ public protocol FileProvider: Sendable {
 }
 
 extension FileProvider {
+    func abortAllUploads() async {}
+
     func makeDirectory(path: VirtualPath, createParents: Bool) async throws {
         throw ProtocolFailure(code: .readOnly, message: "This folder is read-only.")
     }
@@ -165,8 +168,8 @@ extension FileProvider {
 
 enum ProviderSupport {
     static func clampLimit(_ limit: Int) -> Int {
-        if limit <= 0 { return 1000 }
-        return min(limit, 5000)
+        if limit <= 0 { return TetherCoreInfo.maxListEntries }
+        return min(limit, TetherCoreInfo.maxListEntries)
     }
 
     static func clampRead(_ length: Int) -> Int {
