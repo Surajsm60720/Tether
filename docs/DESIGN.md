@@ -138,6 +138,13 @@ Rules:
 ### 6.9 Settings
 Grouped list: Device name, Cache (size + Clear), Terminal font size slider, Forget all Macs (destructive, with confirmation), About with version and What's new.
 
+### 6.10 Live Activities / Dynamic Island (v2.3)
+Glanceable surfaces only — calm, few words, monospaced digits for percents and rates. Use Tether **gold** (`accent` / `#E8B04A` dark) explicitly — do not rely on system blue `.tint` inside the Island. Respect Reduce Motion and Always-On (`isLuminanceReduced`): no repeating pulse when dimmed. The whole Island is tappable; do **not** put clipped "Open Terminal" / "Transfers" labels in the bottom region.
+
+**Transfer — compact:** gold up/down badge; trailing `62%` or `62% · +2` (single line, `fixedSize`). **Expanded Island:** one centered `HStack` (badge + copy + percent) — do **not** use separate leading/trailing regions (they sit higher than the center text on device). Lock Screen keeps a full-width progress row. No footer link text.
+
+**Agent — compact:** leading brand mark / CLI thinking glyph; trailing status **word** only (no pencil / SF Symbol chrome). **Expanded Island:** one centered `HStack` (mark + copy); no trailing icon. Status chip (Thinking / Working / Running / Editing / Needs you / Waiting) tracks the live session via bottom-up PTY scrape. When the agent needs approval or input, update with `AlertConfiguration` so the Island expands / Lock Screen banners — chip uses warning gold and detail “Waiting for your input”. No GIF/video. No transcript in the Island.
+
 ---
 
 ## 7. macOS app

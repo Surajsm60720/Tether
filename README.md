@@ -1,6 +1,6 @@
 # Tether
 
-Version 2.2.
+Version 2.3.
 
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
@@ -15,7 +15,7 @@ There is no account, no third-party networking library, and no third-party crypt
 - Download files to the phone and upload files into a folder that you have marked writable.
 - Watch transfer progress, retry, and cancel.
 - Use a terminal on the phone for everyday file commands (`ls`, `cd`, `cat`, `find`, and the rest listed below). Those commands stay inside the shared folders.
-- Type an allowlisted agent name (`claude`, `agent`, `codex`, `cursor`, and the rest) to open a live terminal session on the Mac. The phone is the screen and keyboard. The agent keeps running if you leave the app; reconnect resumes it.
+- Type an allowlisted agent name (`claude`, `agent`, `codex`, `cursor`, and the rest) to open a live terminal session on the Mac. The phone is the screen and keyboard. The agent keeps running if you leave the app; reconnect resumes it. Live Activities and the Dynamic Island show transfer progress and live agent status (Thinking, Working, Editing, Needs you) while you use other apps.
 - Ask the Mac who you are, print a short system summary, and open a live monitor for CPU, memory, swap, disk, network, battery, temperature, and the busiest processes.
 - Approve or revoke each iPhone from the Mac. A revoked phone cannot open a new session.
 - Reach the Mac from another network with a saved address or a relay, after you have paired once on Wi-Fi.
@@ -87,7 +87,7 @@ Tap a paired Mac to connect. If it is on the same Wi-Fi, the row says **Availabl
 
 The file browser starts at `/`, which is the list of shared folders, not the Mac’s real disk root. Open a folder, tap a file to preview it, or select several files and download them. Large downloads ask before they start. Search filters the current folder by name. Sort by name, date, size, or kind. Switch between list and grid. Pull to refresh discovery from the Mac list.
 
-Downloads land in the app’s local files. Uploads use the system file picker and only succeed in a folder whose Mac-side switch allows uploads. The Transfers tab shows active and finished transfers, progress, and failures. Keep Tether in the foreground during a transfer. iOS can suspend the app, and a suspended app does not continue the copy.
+Downloads land in the app’s local files. Uploads use the system file picker and only succeed in a folder whose Mac-side switch allows uploads. The Transfers tab shows active and finished transfers, progress, and failures. Keep Tether in the foreground during a transfer. iOS can suspend the app, and a suspended app does not continue the copy. While a transfer or agent is active, a Live Activity can show progress or status on the Lock Screen and Dynamic Island; tap it to jump back into Tether. When an agent asks for approval or input, the Island expands with a **Needs you** alert.
 
 The Terminal tab is a prompt of the form `mac-name:/Share/dir $`. History is the up and down keys. Tab completes commands and names in the current folder; a scrollable list above the prompt shows every match (tap to insert). Type `help` for a catalog with each command’s syntax and flags. Output wraps to the width of the monospaced font so a long line is not cut off at the edge of the screen. `exit` returns to Files. `clear` wipes the scrollback.
 
@@ -243,6 +243,15 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 ## Changelog
 
 The same notes are in Settings → What's new on both the Mac and the iPhone.
+
+### 2.3
+
+Live Activities and Dynamic Island for transfers and coding agents.
+
+- File transfers: percent, speed, ETA, and batch count on the Island and Lock Screen; tap to open Transfers.
+- Live agents: per-tool mark plus a status chip (Thinking / Working / Running / Editing / Needs you / Waiting) inferred from the terminal session — never by showing transcript on the Island.
+- When an agent asks for permission, plan approval, or other input, the Island expands with a Needs you alert so you can jump back to Terminal.
+- Updates are opportunistic while iOS keeps the app awake; after that the Island freezes on the last state until you reopen Tether.
 
 ### 2.2
 

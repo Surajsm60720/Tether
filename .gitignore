@@ -1,8 +1,11 @@
 .DS_Store
 *.cursor
+.cursor/
 # Xcode
 build/
 DerivedData/
+*.derived-lab
+.lab-shots/
 *.xcuserstate
 xcuserdata/
 *.xcscmblueprint

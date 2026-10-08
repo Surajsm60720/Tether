@@ -21,6 +21,7 @@ struct TetherClientApp: App {
         WindowGroup {
             RootView(store: store)
                 .tint(Color.tether.accent)
+                .onOpenURL { store.openDeepLink($0) }
         }
     }
 }

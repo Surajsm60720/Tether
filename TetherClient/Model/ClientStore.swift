@@ -129,6 +129,8 @@ final class ClientStore {
     private var agentWriteScheduled = false
     private var agentWriteChain: Task<Void, Never> = Task {}
     private var agentHostID: String?
+    private var agentLastByteAt = ContinuousClock.now.advanced(by: .seconds(-5))
+    private var agentIdlePublishTask: Task<Void, Never>?
 
     init(context: ModelContext, preview: Bool = false) {
         self.context = context
@@ -617,6 +619,7 @@ final class ClientStore {
         }
         let item = TransferItem(name: entry.name, path: virtualPath, direction: .down, total: entry.size, localURL: destination)
         transfers.insert(item, at: 0)
+        publishTransferLiveActivity(force: true)
         let id = item.id
         let ok: Bool = await withCheckedContinuation { continuation in
             let task = Task { @MainActor in
@@ -687,6 +690,7 @@ final class ClientStore {
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init) ?? 0
         let item = TransferItem(name: name, path: full, direction: .up, total: size)
         transfers.insert(item, at: 0)
+        publishTransferLiveActivity(force: true)
         let id = item.id
         transferTasks[id] = Task { @MainActor in
             await self.performUpload(id: id, url: url, full: full, name: name, size: size)
@@ -1100,6 +1104,8 @@ final class ClientStore {
         if let id = agentSessionID {
             await connection?.closeTerminal(session: id)
         }
+        agentExited = true
+        publishAgentLiveActivity(force: true)
         clearAgent()
         guard let program else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1188,10 +1194,29 @@ final class ClientStore {
                     self.transfers[index].state = .failed
                     self.transfers[index].message = L10n.keepOpen
                 }
+                #if canImport(ActivityKit)
+                LiveActivityCoordinator.shared.markBackgroundExpired(
+                    transfers: &self.transfers,
+                    hostName: self.hostName,
+                    hasLiveAgent: self.agentProgram != nil && !self.agentExited
+                )
+                #endif
                 UIApplication.shared.endBackgroundTask(token)
             }
         }
         return token
+    }
+
+    func openDeepLink(_ url: URL) {
+        guard url.scheme == TetherDeepLink.scheme else { return }
+        switch url.host {
+        case "transfers":
+            sessionTab = 2
+        case "terminal":
+            sessionTab = 1
+        default:
+            break
+        }
     }
 
     var prompt: String { "\(hostName.isEmpty ? "mac" : hostName):\(terminalCWD) $ " }
@@ -1264,6 +1289,7 @@ final class ClientStore {
         agentGeneration += 1
         agentFlushScheduled = false
         agentLastPaint = ContinuousClock.now.advanced(by: .seconds(-5))
+        agentLastByteAt = ContinuousClock.now.advanced(by: .seconds(-5))
         agentSurface = nil
         agentExited = false
         agentExitCode = 0
@@ -1275,6 +1301,7 @@ final class ClientStore {
         agentOutbound.removeAll()
         agentColumns = 80
         agentRows = 24
+        publishAgentLiveActivity(force: true)
     }
 
     private func openAgentSession() async {
@@ -1323,6 +1350,7 @@ final class ClientStore {
             if id == agentSessionID {
                 agentExitCode = code
                 agentExited = true
+                publishAgentLiveActivity(force: true)
             } else if agentSessionID == nil, agentProgram != nil {
                 agentEarlyExit[id] = code
             }
@@ -1334,6 +1362,7 @@ final class ClientStore {
     private func applyAgentBytes(_ data: Data) {
         guard !data.isEmpty else { return }
         agentReceived = true
+        agentLastByteAt = ContinuousClock.now
         guard let surface = agentSurface else {
             agentPending.append(data)
             return
@@ -1366,6 +1395,7 @@ final class ClientStore {
         if !agentFlushScheduled, elapsed >= .milliseconds(8) {
             agentLastPaint = now
             agentFrame += 1
+            publishAgentLiveActivity()
             return
         }
         guard !agentFlushScheduled else { return }
@@ -1377,6 +1407,7 @@ final class ClientStore {
             guard self.agentSurface != nil else { return }
             self.agentLastPaint = ContinuousClock.now
             self.agentFrame += 1
+            self.publishAgentLiveActivity()
         }
     }
 
@@ -1417,8 +1448,11 @@ final class ClientStore {
     }
 
     private func clearAgent() {
+        let lingerExited = agentExited && agentProgram != nil
         agentOpenTask?.cancel()
         agentOpenTask = nil
+        agentIdlePublishTask?.cancel()
+        agentIdlePublishTask = nil
         agentProgram = nil
         agentLine = nil
         agentSessionID = nil
@@ -1437,6 +1471,21 @@ final class ClientStore {
         agentPaused = false
         agentHostID = nil
         UserDefaults.standard.removeObject(forKey: "agent.session")
+        #if canImport(ActivityKit)
+        if !lingerExited {
+            LiveActivityCoordinator.shared.syncAgent(
+                program: nil,
+                displayName: nil,
+                received: false,
+                paused: false,
+                exited: false,
+                title: nil,
+                recentlyWrote: false,
+                hostName: hostName,
+                force: true
+            )
+        }
+        #endif
     }
 
     private func rememberAgent() {
@@ -1460,6 +1509,7 @@ final class ClientStore {
         if let cwd = payload["cwd"], !cwd.isEmpty { terminalCWD = cwd }
         agentSurface = AgentSurface(screen: VTScreen(columns: agentColumns, rows: agentRows))
         agentFrame += 1
+        publishAgentLiveActivity(force: true)
     }
 
     private func resumeAgentIfNeeded(host: String) async {
@@ -1473,6 +1523,7 @@ final class ClientStore {
                 agentPaused = false
                 rememberAgent()
                 scheduleAgentWrite()
+                publishAgentLiveActivity(force: true)
                 return
             } catch {
                 lastError = error
@@ -1487,6 +1538,7 @@ final class ClientStore {
         agentSessionID = nil
         UserDefaults.standard.removeObject(forKey: "agent.session")
         agentError = (lastError as? ProtocolFailure)?.message ?? "That session on your Mac has ended."
+        publishAgentLiveActivity(force: true)
     }
 
     private func enableDemo() {
@@ -1517,7 +1569,10 @@ final class ClientStore {
         showCommandHelp = false
         clearFileSearch()
         connection = nil
-        if agentProgram != nil, !agentExited { agentPaused = true }
+        if agentProgram != nil, !agentExited {
+            agentPaused = true
+            publishAgentLiveActivity(force: true)
+        }
         guard connected, !intentionalDisconnect else { return }
         offline = true
         reconnecting = true
@@ -1658,6 +1713,64 @@ final class ClientStore {
         transfers[index].total = total
         transfers[index].state = state
         transfers[index].message = message
+        publishTransferLiveActivity(force: state != .active)
+    }
+
+    private func publishTransferLiveActivity(force: Bool = false) {
+        #if canImport(ActivityKit)
+        LiveActivityCoordinator.shared.syncTransfers(
+            items: transfers,
+            hostName: hostName,
+            force: force
+        )
+        #endif
+    }
+
+    private func publishAgentLiveActivity(force: Bool = false) {
+        #if canImport(ActivityKit)
+        let now = ContinuousClock.now
+        let idleFor = agentLastByteAt.duration(to: now)
+        let recentlyWrote = idleFor < .milliseconds(400)
+        let screenTail = agentSurface.map { AgentScreenHint.tail(from: $0.screen.plainText()) }
+        LiveActivityCoordinator.shared.syncAgent(
+            program: agentProgram,
+            displayName: agentProgram.map { AgentPrograms.displayName($0) },
+            received: agentReceived,
+            paused: agentPaused,
+            exited: agentExited,
+            title: agentSurface?.screen.title,
+            recentlyWrote: recentlyWrote,
+            idleFor: idleFor,
+            screenTail: screenTail,
+            hostName: hostName,
+            force: force
+        )
+        // Only arm the idle flip while output is still "fresh".
+        if idleFor < .milliseconds(1_500) {
+            scheduleAgentIdlePublish()
+        } else {
+            agentIdlePublishTask?.cancel()
+            agentIdlePublishTask = nil
+        }
+        #endif
+    }
+
+    /// Flip Island to Waiting once the PTY has been quiet — paint only runs on bytes.
+    private func scheduleAgentIdlePublish() {
+        #if canImport(ActivityKit)
+        agentIdlePublishTask?.cancel()
+        guard agentProgram != nil, !agentExited, !agentPaused else { return }
+        let generation = agentGeneration
+        let byteStamp = agentLastByteAt
+        agentIdlePublishTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1_600))
+            guard !Task.isCancelled else { return }
+            guard generation == self.agentGeneration else { return }
+            guard self.agentProgram != nil, !self.agentExited else { return }
+            guard self.agentLastByteAt == byteStamp else { return }
+            self.publishAgentLiveActivity(force: true)
+        }
+        #endif
     }
 
     private func appendOutput(_ text: String, kind: TermLine.Kind) {

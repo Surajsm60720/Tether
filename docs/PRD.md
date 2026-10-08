@@ -68,9 +68,9 @@ This capability category already exists (SMB in the Files app, SFTP clients, SSH
 - N2. No general-purpose remote shell. Everyday commands are a virtual interpreter inside shared folders. A paired iPhone may open a live pseudo-terminal only for known coding agents (`claude`, `agent`, `codex`, and the rest of the list in Section 13.5).
 - N3. No internet or remote (outside-LAN) access, relay servers, or accounts.
 - N4. No browsing of the whole disk from the file browser, and no launching Mac GUI apps. The coding-agent session in Section 13.5 is the exception: that process runs as the Mac user.
-- N5. No background transfers while the iOS app is suspended (Section 14.4).
+- N5. No promised full background transfers while the iOS app is suspended (Section 14.4). Live Activities may show last-known or paused transfer state after background time expires; they do not keep chunk transfers running indefinitely.
 - N6. No iPad-specific layout work beyond what SwiftUI gives for free.
-- N7. No CloudKit, push notifications, or any feature requiring the paid developer program.
+- N7. No CloudKit or ActivityKit push-to-update. Local Live Activities (v2.3) update from the app process only; on-device Island QA needs a standard Apple Developer team (same as shipping the iOS app).
 
 ---
 
@@ -316,6 +316,15 @@ SwiftUI app, portrait-first, supports landscape and iPad via adaptive layout. Ro
 
 ### 12.4 Background and lifecycle
 Transfers run while the app is active. On backgrounding, request extra time with `UIApplication.beginBackgroundTask` and pause or fail gracefully if it expires; show "Keep Tether open while transferring" in the Transfers tab. Do not promise background transfers.
+
+### 12.4.1 Live Activities (v2.3)
+While a transfer is active or a live coding agent is running, the iOS client may start ActivityKit Live Activities (Dynamic Island + Lock Screen) via the `TetherWidgets` extension.
+
+- **Transfers:** primary file name, direction, percent, bytes, speed, ETA; batch count as `+N` when multiple. Tap opens Transfers (`tether://transfers`).
+- **Agents:** program display name; live status chip (`Thinking` / `Working` / `Running` / `Editing` / `Needs you` / `Waiting` / …) from bottom-up keyword scrape of the PTY screen tail + OSC title + idle time (transcript itself is never shown). When the agent asks for permission, plan approval, or other input, update with an ActivityKit alert so the Dynamic Island expands (or Lock Screen banners) and the chip reads **Needs you**. Coarse phase drives glyph animation only. Tap opens Terminal (`tether://terminal`).
+- **Updates:** opportunistic while the app is active or still in a background task. After expiry, freeze or show paused copy until the user returns. No push updates.
+- **Motion:** per-agent SF Symbol brand marks and system content transitions / symbol pulses — not GIF or video.
+- **Priority:** when both run, agent uses higher `relevanceScore` so it owns the compact Island; transfer may appear minimal.
 
 ### 12.5 Permissions (Info.plist)
 `NSLocalNetworkUsageDescription`, `NSBonjourServices`, `NSCameraUsageDescription` (QR scan), `NSPhotoLibraryAddUsageDescription` (Save to Photos, Stretch), `NSPhotoLibraryUsageDescription` only if needed by the picker flow.

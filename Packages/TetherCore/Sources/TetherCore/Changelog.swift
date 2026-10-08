@@ -14,9 +14,16 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "2.2"
+    public static let current = "2.3"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "2.3", items: [
+            "Live Activities and Dynamic Island show file-transfer progress and live coding-agent status while you use other apps.",
+            "Transfers: percent, speed, and ETA on the Island and Lock Screen; tap to jump back to Transfers.",
+            "Agents: per-tool mark plus live Thinking / Working / Running / Editing status from the terminal; tap to return to Terminal.",
+            "When an agent asks for approval or input, the Island expands with a Needs you alert so you can jump back in.",
+            "Updates are opportunistic while iOS keeps the app awake — then the Island freezes on the last state until you reopen Tether.",
+        ]),
         ReleaseNotes(version: "2.2", items: [
             "Prevent sleep while active: the Mac stays awake during a connected session or live agent, so remote work is not cut off. Toggle it in Settings on the Mac and the iPhone.",
             "Remote and hotspot reconnects no longer detach a live agent when the old socket closes after the new one resumes.",
