@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import TetherCore
@@ -179,6 +180,42 @@ import Testing
     await pipe.close()
 }
 
+@Test func twoLiveTerminalSessionsCanStayOpenTogether() async throws {
+    let files = MemoryFileProvider()
+    files.addShare(name: "Docs", writable: true)
+    let offer = PairingOffer(hostId: "host0001", hostName: "Studio Mac")
+    let server = MultiAgentTestHost(offer: offer, files: files)
+    let pipe = MemoryPipe()
+    let hostTask = Task {
+        await HostConnection.serve(stream: pipe.host, remote: "test", server: server)
+    }
+    let payload = try PairingPayload.parseQR(offer.qr)
+    let client = try await ClientConnection.establish(
+        stream: pipe.client,
+        deviceId: "phone-1",
+        deviceName: "Suraj's iPhone",
+        mode: .pair(payload)
+    )
+    let box = EventBox()
+    await client.setEventHandler { message in box.add(message) }
+    let first = try await client.openTerminal(line: "claude", cwd: "/Docs", columns: 40, rows: 12)
+    let second = try await client.openTerminal(line: "codex", cwd: "/Docs", columns: 40, rows: 12)
+    #expect(first != second)
+    #expect(server.liveCount == 2)
+    try await client.writeTerminal(session: first, data: Data("a".utf8))
+    try await client.writeTerminal(session: second, data: Data("b".utf8))
+    let wrote = await waitUntil(timeout: .seconds(2)) {
+        server.writes(for: first) == [Data("a".utf8)] && server.writes(for: second) == [Data("b".utf8)]
+    }
+    #expect(wrote)
+    await client.closeTerminal(session: first)
+    let closed = await waitUntil(timeout: .seconds(2)) { server.liveCount == 1 }
+    #expect(closed)
+    await client.close()
+    hostTask.cancel()
+    await pipe.close()
+}
+
 @Test func terminalBridgeKeepsOutputWhileSuspended() async {
     let bridge = TerminalBridge()
     let box = OutputBox()
@@ -350,4 +387,109 @@ private final class OutputBox: @unchecked Sendable {
         let snap = snapshot()
         return ready(snap.0, snap.1)
     }
+}
+
+/// Keeps multiple live agent sessions open (v2.4 concurrent agents).
+private final class MultiAgentTestHost: HostServing, @unchecked Sendable {
+    let hostId = "host0001"
+    var offer: PairingOffer?
+    let filesProvider: MemoryFileProvider
+    let abuse = AbuseGuard()
+    var keys: [String: SymmetricKey] = [:]
+    private let lock = NSLock()
+    private var exits: [String: @Sendable (Int32) -> Void] = [:]
+    private var writesByID: [String: [Data]] = [:]
+
+    init(offer: PairingOffer?, files: MemoryFileProvider) {
+        self.offer = offer
+        self.filesProvider = files
+    }
+
+    var liveCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return exits.count
+    }
+
+    func writes(for id: String) -> [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return writesByID[id] ?? []
+    }
+
+    func hostName() -> String { "Studio Mac" }
+    func currentOffer() -> PairingOffer? { offer }
+    func takeOffer() -> PairingOffer? {
+        let value = offer
+        offer = nil
+        return value
+    }
+    func consumeOffer() { offer = nil }
+    func deviceKey(for deviceId: String) -> SymmetricKey? { keys[deviceId] }
+    func rememberDevice(id: String, name: String, key: SymmetricKey) { keys[id] = key }
+    func sessionApprovalRequired() -> Bool { false }
+    func decide(_ request: ApprovalRequest) async -> Bool { true }
+    func note(_ event: String) {}
+    func connected(deviceId: String, name: String) {}
+    func files() -> any FileProvider { filesProvider }
+    func thumbnail(virtualPath: String, maxPixel: Int) async -> Data? { nil }
+    func watchConnection(for deviceId: String, close: @escaping @Sendable () -> Void) -> UInt64 { 1 }
+    func ignoreConnection(for deviceId: String, generation: UInt64) {}
+    func disconnected(deviceId: String, generation: UInt64) -> Bool { true }
+    func runShell(line: String, cwd: String) async -> TerminalResult? { nil }
+
+    func openTerminal(
+        id: String,
+        line: String,
+        cwd: String,
+        columns: Int,
+        rows: Int,
+        onData: @escaping @Sendable (Data) -> Void,
+        onExit: @escaping @Sendable (Int32) -> Void
+    ) async throws -> UInt64 {
+        try register(id: id, onExit: onExit)
+        onData(Data("ready\r\n".utf8))
+        return 1
+    }
+
+    func writeTerminal(id: String, data: Data) async {
+        recordWrite(id: id, data: data)
+    }
+
+    func resizeTerminal(id: String, columns: Int, rows: Int) async {}
+    func closeTerminal(id: String) async {
+        takeExit(id)?(0)
+    }
+
+    private func register(id: String, onExit: @escaping @Sendable (Int32) -> Void) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if exits[id] == nil, exits.count >= TerminalSlotBook.maxAgents {
+            throw ProtocolFailure(code: .internalError, message: "Close a terminal first.")
+        }
+        exits[id] = onExit
+        writesByID[id] = []
+    }
+
+    private func recordWrite(id: String, data: Data) {
+        lock.lock()
+        writesByID[id, default: []].append(data)
+        lock.unlock()
+    }
+
+    private func takeExit(_ id: String) -> (@Sendable (Int32) -> Void)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return exits.removeValue(forKey: id)
+    }
+    func suspendTerminal(id: String, generation: UInt64) async {}
+    func resumeTerminal(
+        id: String,
+        onData: @escaping @Sendable (Data) -> Void,
+        onExit: @escaping @Sendable (Int32) -> Void
+    ) async -> UInt64? {
+        nil
+    }
+    func preventSleepWhileActive() -> Bool { true }
+    func setPreventSleepWhileActive(_ value: Bool) {}
 }

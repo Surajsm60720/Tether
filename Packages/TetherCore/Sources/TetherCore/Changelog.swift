@@ -14,9 +14,16 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "2.3"
+    public static let current = "2.4"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "2.4", items: [
+            "Terminal slots: open up to three windows inside Terminal and switch without losing progress.",
+            "Each slot can be a virtual shell, a live coding agent, the system Monitor, or a pinned fetch snapshot.",
+            "Drag to reorder slots; only one is on screen at a time — the others keep running in the background.",
+            "htop, btop, and fetch open as slots instead of covering the whole app, so you can jump back to a shell or agent.",
+            "Run more than one coding agent at once (still capped at three terminals); the Island follows the focused or most urgent agent.",
+        ]),
         ReleaseNotes(version: "2.3", items: [
             "Live Activities and Dynamic Island show file-transfer progress and live coding-agent status while you use other apps.",
             "Transfers: percent, speed, and ETA on the Island and Lock Screen; tap to jump back to Transfers.",

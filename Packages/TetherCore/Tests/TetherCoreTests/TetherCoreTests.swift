@@ -653,6 +653,10 @@ final class TestHost: HostServing, @unchecked Sendable {
     #expect(alias.action?.type == "monitor")
     let offline = await engine.execute(line: "fetch", cwd: "/", files: files)
     #expect(offline.exit == 1)
+    let fetchSlot = await engine.execute(line: "fetch", cwd: "/", files: files, context: context)
+    #expect(fetchSlot.exit == 0)
+    #expect(fetchSlot.action?.type == "fetch")
+    #expect(fetchSlot.stdout.contains("suraj@Studio Mac"))
 }
 
 @Test func systemProbeReadsThisMac() async {

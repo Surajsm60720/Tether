@@ -23,9 +23,148 @@ struct TerminalScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if store.agentProgram != nil {
-                AgentTerminalView(store: store)
-            } else {
+            slotStrip
+            Group {
+                switch store.focusedSlot?.kind {
+                case .agent:
+                    AgentTerminalView(store: store)
+                case .monitor:
+                    MonitorScreen(store: store, embedded: true)
+                case .fetch:
+                    fetchSurface
+                default:
+                    virtualSurface
+                }
+            }
+            .id("\(store.focusedSlotID)-\(store.slotEpoch)")
+        }
+        .background(TerminalTheme.standard.bg)
+        // Live agent: hide the tab bar so the PTY and key row use the full bottom edge.
+        .toolbar(store.focusedIsLiveAgent ? .hidden : .automatic, for: .tabBar)
+        .onAppear {
+            if store.sessionTab == 1 { focused = store.focusedSlot?.kind == .virtual }
+            store.syncMonitorPolling()
+        }
+        .onChange(of: store.focusedSlotID) { _, _ in
+            if store.sessionTab == 1 { focused = store.focusedSlot?.kind == .virtual }
+            store.syncMonitorPolling()
+        }
+        .onChange(of: store.agentProgram) { _, program in
+            if program == nil, store.sessionTab == 1 { focused = store.focusedSlot?.kind == .virtual }
+        }
+        .onChange(of: store.sessionTab) { _, tab in
+            // Leaving Terminal must drop the keyboard so Files and Transfers get the full screen.
+            // Slot sessions stay alive in ClientStore until closed.
+            if tab != 1 {
+                focused = false
+            } else if store.focusedSlot?.kind == .virtual {
+                focused = true
+            }
+            store.syncMonitorPolling()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+            keyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+            keyboardVisible = false
+        }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
+            if case let .success(url) = result {
+                let accessing = url.startAccessingSecurityScopedResource()
+                Task {
+                    await store.upload(url: url)
+                    if accessing { url.stopAccessingSecurityScopedResource() }
+                }
+            }
+        }
+        .onChange(of: store.requestUpload) { _, requested in
+            if requested {
+                importing = true
+                store.requestUpload = false
+            }
+        }
+    }
+
+    private var slotStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(Array(store.terminalSlots.enumerated()), id: \.element.id) { index, slot in
+                    slotChip(slot, index: index)
+                }
+                Button {
+                    store.addTerminalSlot()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(
+                            TerminalSlotBook.canAdd(count: store.terminalSlots.count)
+                                ? TerminalTheme.standard.prompt
+                                : TerminalTheme.standard.dim.opacity(0.45)
+                        )
+                        .frame(minWidth: 36, minHeight: 32)
+                }
+                .disabled(!TerminalSlotBook.canAdd(count: store.terminalSlots.count))
+                .accessibilityLabel("New terminal")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        .background(TerminalTheme.standard.bg)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(TerminalTheme.standard.dim.opacity(0.25))
+                .frame(height: 1)
+        }
+    }
+
+    private func slotChip(_ slot: TerminalSlotState, index: Int) -> some View {
+        let selected = slot.id == store.focusedSlotID
+        return Button {
+            store.focusSlot(id: slot.id)
+        } label: {
+            HStack(spacing: 4) {
+                if slot.isLiveAgent {
+                    Circle()
+                        .fill(slot.agentNeedsYou ? Color.tether.warning : Color.tether.success)
+                        .frame(width: 6, height: 6)
+                }
+                Text(slot.title)
+                    .font(.caption.weight(selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? TerminalTheme.standard.fg : TerminalTheme.standard.dim)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(selected ? TerminalTheme.standard.dim.opacity(0.22) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(TerminalTheme.standard.dim.opacity(selected ? 0.55 : 0.25), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Terminal \(slot.title)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .onDrag {
+            NSItemProvider(object: slot.id as NSString)
+        }
+        .onDrop(of: [.text], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: NSString.self) { item, _ in
+                guard let dragged = item as? String else { return }
+                Task { @MainActor in
+                    guard let from = store.terminalSlots.firstIndex(where: { $0.id == dragged }) else { return }
+                    store.reorderTerminalSlots(from: from, to: index)
+                }
+            }
+            return true
+        }
+    }
+
+    private var virtualSurface: some View {
+        VStack(spacing: 0) {
             GeometryReader { geo in
                 let inner = max(120, geo.size.width - 24)
                 ScrollViewReader { proxy in
@@ -77,49 +216,42 @@ struct TerminalScreen: View {
             } onKeyboard: {
                 toggleKeyboard()
             }
-            }
+        }
+    }
+
+    private var fetchSurface: some View {
+        ScrollView {
+            Text(store.fetchText ?? "")
+                .font(font)
+                .foregroundStyle(TerminalTheme.standard.fg)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .padding(12)
         }
         .background(TerminalTheme.standard.bg)
-        // Live agent: hide the tab bar so the PTY and key row use the full bottom edge.
-        .toolbar(store.agentProgram != nil && !store.agentExited ? .hidden : .automatic, for: .tabBar)
-        .onAppear {
-            if store.sessionTab == 1 { focused = store.agentProgram == nil }
+    }
+
+    private var headerSubtitle: String {
+        switch store.focusedSlot?.kind {
+        case .agent:
+            return store.agentProgram.map { AgentPrograms.displayName($0) } ?? "agent"
+        case .monitor:
+            return "Monitor"
+        case .fetch:
+            return "fetch"
+        default:
+            return store.terminalCWD
         }
-        .onChange(of: store.agentProgram) { _, program in
-            if program == nil, store.sessionTab == 1 { focused = true }
-        }
-        .onChange(of: store.sessionTab) { _, tab in
-            // Leaving Terminal must drop the keyboard so Files and Transfers get the full screen.
-            // The agent session itself stays alive in ClientStore until X ends it.
-            if tab != 1 {
-                focused = false
-            } else if store.agentProgram == nil {
-                focused = true
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
-            keyboardVisible = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
-            keyboardVisible = false
-        }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
-            if case let .success(url) = result {
-                let accessing = url.startAccessingSecurityScopedResource()
-                Task {
-                    await store.upload(url: url)
-                    if accessing { url.stopAccessingSecurityScopedResource() }
-                }
-            }
-        }
-        .fullScreenCover(isPresented: $store.showMonitor) {
-            MonitorScreen(store: store)
-        }
-        .onChange(of: store.requestUpload) { _, requested in
-            if requested {
-                importing = true
-                store.requestUpload = false
-            }
+    }
+
+    private var closeAccessibilityLabel: String {
+        switch store.focusedSlot?.kind {
+        case .agent:
+            return "Close session"
+        case .monitor, .fetch:
+            return "Close tab"
+        default:
+            return store.terminalSlots.count > 1 ? "Close tab" : "Back to files"
         }
     }
 
@@ -133,13 +265,13 @@ struct TerminalScreen: View {
                     .font(.caption)
                     .foregroundStyle(TerminalTheme.standard.fg)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(store.agentProgram.map { AgentPrograms.displayName($0) } ?? store.terminalCWD)
+                Text(headerSubtitle)
                     .font(.caption)
                     .foregroundStyle(TerminalTheme.standard.dir)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            if store.agentProgram != nil {
+            if store.focusedSlot?.kind == .agent {
                 Button {
                     // Leave Terminal without ending the live session (tab bar returns).
                     store.sessionTab = 0
@@ -159,17 +291,13 @@ struct TerminalScreen: View {
                 .accessibilityLabel("Copy screen")
             }
             Button {
-                if store.agentProgram != nil {
-                    Task { await store.finishAgent() }
-                } else {
-                    store.sessionTab = 0
-                }
+                store.closeFocusedSlot()
             } label: {
                 Image(systemName: "xmark")
                     .foregroundStyle(TerminalTheme.standard.dim)
             }
             .frame(minWidth: 44, minHeight: 44)
-            .accessibilityLabel(store.agentProgram == nil ? "Back to files" : "Close session")
+            .accessibilityLabel(closeAccessibilityLabel)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

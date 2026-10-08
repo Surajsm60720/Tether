@@ -125,7 +125,9 @@ public struct TerminalEngine: Sendable {
 
     private func fetch(cwd: VirtualPath, context: TerminalContext?) -> TerminalResult {
         guard let context else { return fail("fetch: connect to a Mac first.", cwd: cwd) }
-        return TerminalResult(stdout: SystemText.fetch(context.profile), cwd: cwd.string)
+        let text = SystemText.fetch(context.profile)
+        // Client opens/refreshes a pinned fetch slot (v2.4) using stdout.
+        return TerminalResult(stdout: text, cwd: cwd.string, action: TerminalAction(type: "fetch"))
     }
 
     private func changeDirectory(_ args: [String], cwd: VirtualPath, files: any FileProvider) async -> TerminalResult {

@@ -1,6 +1,6 @@
 # Tether
 
-Version 2.3.
+Version 2.4.
 
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
@@ -243,6 +243,15 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 ## Changelog
 
 The same notes are in Settings → What's new on both the Mac and the iPhone.
+
+### 2.4
+
+Multiple terminal slots inside the Terminal tab.
+
+- Up to three reorderable slots: virtual shell, live coding agent, Monitor, or a pinned fetch snapshot.
+- Switch tabs without losing progress; inactive slots keep running in the background.
+- `htop` / `btop` and `fetch` open as slots instead of covering the whole app.
+- More than one coding agent can run at once (still capped at three terminals); the Island follows the focused or most urgent agent.
 
 ### 2.3
 

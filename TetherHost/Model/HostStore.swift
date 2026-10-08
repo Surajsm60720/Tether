@@ -885,6 +885,14 @@ final class HostRuntime: HostServing, @unchecked Sendable {
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
     ) async throws -> UInt64 {
+        try sync {
+            if agents[id] == nil, agents.count >= TerminalSlotBook.maxAgents {
+                throw ProtocolFailure(
+                    code: .internalError,
+                    message: "Close a terminal first. This Mac allows \(TerminalSlotBook.maxAgents) live agents at once."
+                )
+            }
+        }
         let directory = try workingDirectory(cwd)
         let scoped = directory.startAccessingSecurityScopedResource()
         let script = AgentPrograms.shellScript(line: line, directory: directory.path)
@@ -907,14 +915,17 @@ final class HostRuntime: HostServing, @unchecked Sendable {
             throw ProtocolFailure(code: .internalError, message: "Couldn't open a terminal on this Mac.")
         }
         let live = LiveAgent(session: session, bridge: bridge, folder: directory, scoped: scoped)
-        let previous: [LiveAgent] = sync {
-            let others = Array(agents.values)
+        let replaced: LiveAgent? = sync {
+            let previous = agents[id]
             agents[id] = live
-            return others
+            return previous
         }
-        for agent in previous where agent.session.id != id {
-            agent.session.terminate()
-            releaseAgent(agent.session.id)
+        // Same session id was replaced in the map — tear down the old PTY without removing the new entry.
+        if let replaced {
+            replaced.session.terminate()
+            if replaced.scoped {
+                replaced.folder.stopAccessingSecurityScopedResource()
+            }
         }
         onEvent?(.activityChanged)
         return generation

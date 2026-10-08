@@ -283,7 +283,7 @@ import Testing
 }
 
 @Test func v1E2E_changelogListsEveryShippedVersion() throws {
-    #expect(AppChangelog.current == "2.3")
+    #expect(AppChangelog.current == "2.4")
     let versions = Set(AppChangelog.releases.map(\.version))
     #expect(versions.contains("1.0"))
     #expect(versions.contains("1.1"))
@@ -291,6 +291,8 @@ import Testing
     #expect(versions.contains("2.0"))
     #expect(versions.contains("2.1"))
     #expect(versions.contains("2.2"))
+    #expect(versions.contains("2.3"))
+    #expect(versions.contains("2.4"))
     let v1 = try #require(AppChangelog.releases.first { $0.version == "1.0" })
     #expect(v1.items.count >= 8)
     let v2 = try #require(AppChangelog.releases.first { $0.version == "2.0" })
@@ -301,6 +303,8 @@ import Testing
     #expect(v22.items.contains(where: { $0.localizedCaseInsensitiveContains("sleep") }))
     #expect(v22.items.contains(where: { $0.localizedCaseInsensitiveContains("suggest") }))
     #expect(v22.items.contains(where: { $0.localizedCaseInsensitiveContains("Files search") || $0.localizedCaseInsensitiveContains("across every shared") }))
+    let v24 = try #require(AppChangelog.releases.first { $0.version == "2.4" })
+    #expect(v24.items.contains(where: { $0.localizedCaseInsensitiveContains("slot") }))
 }
 
 @Test func v1E2E_terminalCommandSurfaceMatchesHelp() async {

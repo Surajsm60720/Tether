@@ -44,25 +44,18 @@ final class ClientStore {
     var pendingLarge: FileEntry?
     var largeFileWillPreview: Bool { pendingPreview }
     var readOnlyAlert = false
-    var terminalLines: [TermLine] = []
-    var terminalCWD = "/"
-    var showMonitor = false
+    /// Ordered Terminal slots (max `TerminalSlotBook.maxSlots`).
+    var terminalSlots: [TerminalSlotState] = []
+    var focusedSlotID = ""
+    /// Bumps when slot list, focus, or virtual/fetch content changes so SwiftUI refreshes.
+    var slotEpoch = 0
     var monitorProfile: SystemProfile?
     var monitorStats: SystemStats?
     var monitorDown = "0 B/s"
     var monitorUp = "0 B/s"
     var monitorMessage: String?
-    var history: [String] = []
-    var historyIndex = 0
-    var agentProgram: String?
-    /// Bumps when the live screen should be drawn again. The screen itself stays in `agentSurface` so SwiftUI does not copy it on every update.
+    /// Bumps when any live agent screen should be drawn again.
     var agentFrame = 0
-    var agentSurface: AgentSurface?
-    var agentExited = false
-    var agentExitCode = 0
-    var agentError: String?
-    var agentReceived = false
-    var agentPaused = false
     var deviceName: String
     var demoMode: Bool
     var fontSize: Double
@@ -108,29 +101,61 @@ final class ClientStore {
     private var pendingPath = "/"
     private var thumbnailCache: [String: Data] = [:]
     private let deviceID: String
-    private var agentLine: String?
-    private var agentSessionID: String?
-    private var agentColumns = 80
-    private var agentRows = 24
-    private var agentOpenTask: Task<Void, Never>?
     private var terminalEpoch = 0
     private var terminalBusy = false
-    private var agentPending = Data()
-    private var agentGeneration = 0
-    private var agentFlushScheduled = false
-    private var agentLastPaint = ContinuousClock.now.advanced(by: .seconds(-5))
-    private var agentWriteFailures = 0
     private var agentEarly: [String: Data] = [:]
     private var agentEarlyExit: [String: Int] = [:]
-    private var agentOutbound = Data()
     private var completionListCache: [String: (at: ContinuousClock.Instant, names: [CompletionName])] = [:]
     private let completionListTTL: Duration = .seconds(2)
     private var fileSearchToken = 0
-    private var agentWriteScheduled = false
-    private var agentWriteChain: Task<Void, Never> = Task {}
-    private var agentHostID: String?
-    private var agentLastByteAt = ContinuousClock.now.advanced(by: .seconds(-5))
-    private var agentIdlePublishTask: Task<Void, Never>?
+    private var monitorPollTask: Task<Void, Never>?
+
+    var focusedSlot: TerminalSlotState? {
+        terminalSlots.first { $0.id == focusedSlotID } ?? terminalSlots.first
+    }
+
+    var terminalLines: [TermLine] {
+        get { focusedSlot?.lines ?? [] }
+        set {
+            focusedSlot?.lines = newValue
+            bumpSlots()
+        }
+    }
+
+    var terminalCWD: String {
+        get { focusedSlot?.cwd ?? "/" }
+        set {
+            focusedSlot?.cwd = newValue
+            bumpSlots()
+        }
+    }
+
+    var history: [String] {
+        get { focusedSlot?.history ?? [] }
+        set {
+            focusedSlot?.history = newValue
+            bumpSlots()
+        }
+    }
+
+    var historyIndex: Int {
+        get { focusedSlot?.historyIndex ?? 0 }
+        set {
+            focusedSlot?.historyIndex = newValue
+            bumpSlots()
+        }
+    }
+
+    var agentProgram: String? { focusedSlot?.kind == .agent ? focusedSlot?.agentProgram : nil }
+    var agentSurface: AgentSurface? { focusedSlot?.kind == .agent ? focusedSlot?.agentSurface : nil }
+    var agentExited: Bool { focusedSlot?.agentExited ?? false }
+    var agentExitCode: Int { focusedSlot?.agentExitCode ?? 0 }
+    var agentError: String? { focusedSlot?.agentError }
+    var agentReceived: Bool { focusedSlot?.agentReceived ?? false }
+    var agentPaused: Bool { focusedSlot?.agentPaused ?? false }
+    var fetchText: String? { focusedSlot?.kind == .fetch ? focusedSlot?.fetchText : nil }
+    var hasLiveAgent: Bool { terminalSlots.contains(where: \.isLiveAgent) }
+    var focusedIsLiveAgent: Bool { focusedSlot?.isLiveAgent == true }
 
     init(context: ModelContext, preview: Bool = false) {
         self.context = context
@@ -140,11 +165,14 @@ final class ClientStore {
         fontSize = defaults.object(forKey: "terminalFontSize") as? Double ?? 14
         preventSleepWhileActive = defaults.object(forKey: "preventSleepWhileActive") as? Bool ?? true
         deviceID = Self.loadDeviceID()
+        let welcome = TerminalSlotState.virtualWelcome(text: L10n.termWelcome)
+        terminalSlots = [welcome]
+        focusedSlotID = welcome.id
         ClientStore.shared = self
         reloadPaired()
         reloadRemote()
         refreshCacheSize()
-        restoreAgent()
+        restoreAgents()
         if preview { return }
         startPathMonitor()
         if !defaults.bool(forKey: "didAcceptPrimer") {
@@ -255,13 +283,12 @@ final class ClientStore {
                 touch(saved.id)
             }
             shares = try await session.shares()
-            if agentProgram == nil {
+            if !hasLiveAgent {
                 path = "/"
-                terminalCWD = "/"
-                terminalLines = [TermLine(text: L10n.termWelcome, kind: .dim)]
+                resetTerminalSlots()
             }
             try await refresh()
-            await resumeAgentIfNeeded(host: dial.hostId)
+            await resumeAgentsIfNeeded(host: dial.hostId)
         } catch {
             await stream.close()
         }
@@ -390,12 +417,13 @@ final class ClientStore {
             shares = try await session.shares()
             if !restoring {
                 path = "/"
-                if agentProgram == nil { terminalCWD = "/" }
-                terminalLines = [TermLine(text: L10n.termWelcome, kind: .dim)]
+                if !hasLiveAgent {
+                    resetTerminalSlots()
+                }
             }
             try await refresh()
             await syncPreventSleepPreference()
-            await resumeAgentIfNeeded(host: item.id)
+            await resumeAgentsIfNeeded(host: item.id)
         } catch {
             await stream.close()
             reconnecting = false
@@ -440,8 +468,7 @@ final class ClientStore {
             hostName = name
             connected = true
             path = "/"
-            terminalCWD = "/"
-            terminalLines = [TermLine(text: L10n.termWelcome, kind: .dim)]
+            resetTerminalSlots()
             pairPhase = .success(name)
             shares = try await session.shares()
             try await refresh()
@@ -465,14 +492,14 @@ final class ClientStore {
         intentionalDisconnect = true
         reconnectTask?.cancel()
         let current = connection
-        let session = agentSessionID
+        let sessions = terminalSlots.compactMap(\.agentSessionID)
         connection = nil
         connected = false
         offline = false
         reconnecting = false
-        clearAgent()
+        clearAllAgents(keepSlots: false)
         Task {
-            if let session {
+            for session in sessions {
                 await current?.closeTerminal(session: session)
             }
             await current?.close()
@@ -957,8 +984,10 @@ final class ClientStore {
             }
             guard epoch == terminalEpoch else { return }
             terminalCWD = result.cwd
-            // Interactive catalog already shows syntax; skip the long dump on a small screen.
-            if showCommandHelp {
+            if result.action?.type == "fetch" {
+                openFetchSlot(text: result.stdout)
+            } else if showCommandHelp {
+                // Interactive catalog already shows syntax; skip the long dump on a small screen.
                 appendOutput("Tap a command below for syntax and flags. Scroll the list for every command.\n", kind: .dim)
             } else {
                 appendOutput(result.stdout, kind: .output)
@@ -967,7 +996,7 @@ final class ClientStore {
             if mutatesFolder(trimmed), result.exit == 0 {
                 invalidateCompletionCache()
             }
-            if let action = result.action {
+            if let action = result.action, action.type != "fetch" {
                 await perform(action)
             }
         } catch {
@@ -1056,58 +1085,169 @@ final class ClientStore {
     }
 
     func noteAgentLayout(columns: Int, rows: Int) {
-        guard agentProgram != nil, !agentExited else { return }
+        guard let slot = focusedSlot, slot.kind == .agent, !slot.agentExited else { return }
+        // Keep the last real size when another root tab or slot collapses the view.
+        if sessionTab != 1 { return }
         let columns = min(200, max(2, columns))
         let rows = min(80, max(2, rows))
-        // Keep the last real size when another tab is selected and the terminal collapses.
-        if agentSurface != nil, columns < 10 || rows < 3 { return }
-        let changed = agentSurface == nil || columns != agentColumns || rows != agentRows
-        agentColumns = columns
-        agentRows = rows
-        if let surface = agentSurface {
+        if slot.agentSurface != nil, columns < 10 || rows < 3 { return }
+        let changed = slot.agentSurface == nil || columns != slot.agentColumns || rows != slot.agentRows
+        slot.agentColumns = columns
+        slot.agentRows = rows
+        if let surface = slot.agentSurface {
             if changed {
                 surface.screen.resize(columns: columns, rows: rows)
                 agentFrame += 1
             }
         } else {
-            agentSurface = AgentSurface(screen: VTScreen(columns: columns, rows: rows))
+            slot.agentSurface = AgentSurface(screen: VTScreen(columns: columns, rows: rows))
             agentFrame += 1
-            drainAgentPending()
+            drainAgentPending(slot)
         }
-        if let id = agentSessionID {
+        if let id = slot.agentSessionID {
             guard changed else { return }
             Task { try? await self.connection?.resizeTerminal(session: id, columns: columns, rows: rows) }
             return
         }
-        guard agentOpenTask == nil else { return }
-        agentOpenTask = Task { await self.openAgentSession() }
+        guard slot.agentOpenTask == nil else { return }
+        let slotID = slot.id
+        slot.agentOpenTask = Task { await self.openAgentSession(slotID: slotID) }
     }
 
     func sendAgentInput(_ input: VTInput) {
-        guard !agentExited else { return }
-        let screen = agentSurface?.screen ?? VTScreen(columns: agentColumns, rows: agentRows)
+        guard let slot = focusedSlot, slot.kind == .agent, !slot.agentExited else { return }
+        let screen = slot.agentSurface?.screen ?? VTScreen(columns: slot.agentColumns, rows: slot.agentRows)
         let data = VTKeys.encode(input, applicationCursor: screen.applicationCursorKeys, bracketedPaste: screen.bracketedPaste)
         guard !data.isEmpty else { return }
-        agentWriteFailures = 0
-        agentOutbound.append(data)
-        guard agentSessionID != nil else { return }
-        scheduleAgentWrite()
+        slot.agentWriteFailures = 0
+        slot.agentOutbound.append(data)
+        guard slot.agentSessionID != nil else { return }
+        scheduleAgentWrite(slot)
     }
 
     func finishAgent() async {
-        agentOpenTask?.cancel()
-        agentOpenTask = nil
-        let program = agentProgram
-        let text = agentSurface?.screen.plainText() ?? ""
-        let code = agentExitCode
-        let error = agentError
-        if let id = agentSessionID {
+        guard let slot = focusedSlot, slot.kind == .agent else { return }
+        await endAgentSlot(slot, dumpToVirtual: true)
+    }
+
+    func focusSlot(id: String) {
+        guard terminalSlots.contains(where: { $0.id == id }) else { return }
+        focusedSlotID = id
+        bumpSlots()
+        syncMonitorPolling()
+        publishAgentLiveActivity(force: true)
+    }
+
+    func addTerminalSlot() {
+        guard TerminalSlotBook.canAdd(count: terminalSlots.count) else {
+            notice = "Close a terminal first. You can keep up to \(TerminalSlotBook.maxSlots) open."
+            return
+        }
+        let slot = TerminalSlotState.virtualWelcome(text: L10n.termWelcome)
+        terminalSlots.append(slot)
+        focusedSlotID = slot.id
+        bumpSlots()
+        syncMonitorPolling()
+    }
+
+    func reorderTerminalSlots(from: Int, to: Int) {
+        guard terminalSlots.indices.contains(from), terminalSlots.indices.contains(to), from != to else { return }
+        let item = terminalSlots.remove(at: from)
+        terminalSlots.insert(item, at: to)
+        bumpSlots()
+        rememberAgents()
+    }
+
+    func closeFocusedSlot() {
+        guard let slot = focusedSlot else { return }
+        if slot.kind == .agent {
+            if slot.isLiveAgent {
+                Task { await self.endAgentSlot(slot, dumpToVirtual: true) }
+            } else {
+                removeSlot(id: slot.id)
+            }
+            return
+        }
+        if terminalSlots.count == 1, slot.kind == .virtual {
+            sessionTab = 0
+            return
+        }
+        removeSlot(id: slot.id)
+    }
+
+    func closeMonitorSlot() {
+        guard let slot = terminalSlots.first(where: { $0.kind == .monitor }) else { return }
+        removeSlot(id: slot.id)
+    }
+
+    private func bumpSlots() {
+        slotEpoch += 1
+    }
+
+    private func resetTerminalSlots() {
+        monitorPollTask?.cancel()
+        monitorPollTask = nil
+        let welcome = TerminalSlotState.virtualWelcome(text: L10n.termWelcome)
+        terminalSlots = [welcome]
+        focusedSlotID = welcome.id
+        bumpSlots()
+    }
+
+    private func removeSlot(id: String) {
+        let metas = terminalSlots.map(\.meta)
+        if let result = TerminalSlotBook.close(slots: metas, focused: focusedSlotID, id: id) {
+            terminalSlots.removeAll { $0.id == id }
+            if terminalSlots.isEmpty {
+                let welcome = TerminalSlotState.virtualWelcome(text: L10n.termWelcome)
+                terminalSlots = [welcome]
+                focusedSlotID = welcome.id
+            } else {
+                focusedSlotID = result.focused
+            }
+            bumpSlots()
+            syncMonitorPolling()
+            rememberAgents()
+            return
+        }
+        guard terminalSlots.contains(where: { $0.id == id && $0.kind == .agent }) else { return }
+        let result = TerminalSlotBook.removeAgent(slots: metas, focused: focusedSlotID, id: id)
+        terminalSlots.removeAll { $0.id == id }
+        if terminalSlots.isEmpty {
+            let welcome = TerminalSlotState.virtualWelcome(text: L10n.termWelcome)
+            terminalSlots = [welcome]
+            focusedSlotID = welcome.id
+        } else {
+            focusedSlotID = result.focused
+        }
+        bumpSlots()
+        syncMonitorPolling()
+        rememberAgents()
+    }
+
+    private func endAgentSlot(_ slot: TerminalSlotState, dumpToVirtual: Bool) async {
+        slot.agentOpenTask?.cancel()
+        slot.agentOpenTask = nil
+        let program = slot.agentProgram
+        let text = slot.agentSurface?.screen.plainText() ?? ""
+        let code = slot.agentExitCode
+        let error = slot.agentError
+        if let id = slot.agentSessionID {
             await connection?.closeTerminal(session: id)
         }
-        agentExited = true
+        slot.agentExited = true
         publishAgentLiveActivity(force: true)
-        clearAgent()
-        guard let program else { return }
+        let slotID = slot.id
+        clearAgentSlot(slot)
+        removeSlot(id: slotID)
+        guard dumpToVirtual, let program else { return }
+        // Ensure a virtual slot is focused to receive the transcript dump.
+        if focusedSlot?.kind != .virtual {
+            if let virtual = terminalSlots.first(where: { $0.kind == .virtual }) {
+                focusSlot(id: virtual.id)
+            } else if TerminalSlotBook.canAdd(count: terminalSlots.count) {
+                addTerminalSlot()
+            }
+        }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { appendOutput(trimmed + "\n", kind: .output) }
         if let error {
@@ -1116,6 +1256,412 @@ final class ClientStore {
         let suffix = code == 0 ? "" : " (\(code))"
         terminalLines.append(TermLine(text: "\(AgentPrograms.displayName(program)) ended\(suffix)", kind: .dim))
     }
+
+    private func beginAgent(line: String, program: String) {
+        guard let slot = focusedSlot, slot.kind == .virtual else {
+            notice = "Switch to a shell tab to start an agent."
+            return
+        }
+        let metas = terminalSlots.map(\.meta)
+        guard TerminalSlotBook.canOpenAgent(slots: metas, convertingSlotID: slot.id) else {
+            terminalLines.append(TermLine(text: "Close a terminal first. You can keep up to \(TerminalSlotBook.maxSlots) open.", kind: .error))
+            return
+        }
+        slot.agentOpenTask?.cancel()
+        slot.agentOpenTask = nil
+        slot.kind = .agent
+        slot.agentLine = line
+        slot.agentProgram = program
+        slot.agentHostID = hostId
+        slot.agentSessionID = nil
+        slot.agentPaused = false
+        slot.agentGeneration += 1
+        slot.agentFlushScheduled = false
+        slot.agentLastPaint = ContinuousClock.now.advanced(by: .seconds(-5))
+        slot.agentLastByteAt = ContinuousClock.now.advanced(by: .seconds(-5))
+        slot.agentSurface = nil
+        slot.agentExited = false
+        slot.agentExitCode = 0
+        slot.agentError = nil
+        slot.agentReceived = false
+        slot.agentPending.removeAll()
+        slot.agentOutbound.removeAll()
+        slot.agentColumns = 80
+        slot.agentRows = 24
+        slot.agentNeedsYou = false
+        bumpSlots()
+        rememberAgents()
+        publishAgentLiveActivity(force: true)
+    }
+
+    private func openAgentSession(slotID: String) async {
+        guard let slot = terminalSlots.first(where: { $0.id == slotID }) else { return }
+        defer { slot.agentOpenTask = nil }
+        guard let connection, let line = slot.agentLine, slot.agentSessionID == nil, slot.agentProgram != nil else { return }
+        let columns = slot.agentColumns
+        let rows = slot.agentRows
+        let cwd = slot.cwd
+        do {
+            let id = try await connection.openTerminal(line: line, cwd: cwd, columns: columns, rows: rows)
+            guard slot.agentProgram != nil else {
+                await connection.closeTerminal(session: id)
+                return
+            }
+            slot.agentSessionID = id
+            rememberAgents()
+            if let early = agentEarly.removeValue(forKey: id) {
+                applyAgentBytes(early, to: slot)
+            }
+            if let code = agentEarlyExit.removeValue(forKey: id) {
+                slot.agentExitCode = code
+                slot.agentExited = true
+            }
+            if !slot.agentExited, (slot.agentColumns != columns || slot.agentRows != rows) {
+                try? await connection.resizeTerminal(session: id, columns: slot.agentColumns, rows: slot.agentRows)
+            }
+            scheduleAgentWrite(slot)
+        } catch {
+            slot.agentExited = true
+            slot.agentError = (error as? ProtocolFailure)?.message ?? "Couldn't open a terminal on this Mac."
+            bumpSlots()
+        }
+    }
+
+    private func handleAgentEvent(_ message: WireMessage) {
+        guard let id = message.header.session else { return }
+        switch message.header.op {
+        case Op.termData:
+            if let slot = terminalSlots.first(where: { $0.agentSessionID == id }) {
+                applyAgentBytes(message.body, to: slot)
+            } else if terminalSlots.contains(where: { $0.kind == .agent && $0.agentSessionID == nil && $0.agentProgram != nil }) {
+                var existing = agentEarly[id] ?? Data()
+                existing.append(message.body)
+                agentEarly[id] = existing
+            }
+        case Op.termExit:
+            let code = message.header.exit ?? 0
+            if let slot = terminalSlots.first(where: { $0.agentSessionID == id }) {
+                slot.agentExitCode = code
+                slot.agentExited = true
+                bumpSlots()
+                publishAgentLiveActivity(force: true)
+            } else if terminalSlots.contains(where: { $0.kind == .agent && $0.agentSessionID == nil && $0.agentProgram != nil }) {
+                agentEarlyExit[id] = code
+            }
+        default:
+            break
+        }
+    }
+
+    private func applyAgentBytes(_ data: Data, to slot: TerminalSlotState) {
+        guard !data.isEmpty else { return }
+        slot.agentReceived = true
+        slot.agentLastByteAt = ContinuousClock.now
+        guard let surface = slot.agentSurface else {
+            slot.agentPending.append(data)
+            return
+        }
+        let replies = surface.screen.ingest(data)
+        if !replies.isEmpty {
+            var combined = replies
+            combined.append(slot.agentOutbound)
+            slot.agentOutbound = combined
+            scheduleAgentWrite(slot)
+        }
+        let tail = AgentScreenHint.tail(from: surface.screen.plainText())
+        let reading = AgentScreenHint.reading(title: surface.screen.title, screenTail: tail)
+        if reading.wantsAttention {
+            slot.agentNeedsYou = true
+        }
+        scheduleAgentPublish(slot)
+    }
+
+    private func drainAgentPending(_ slot: TerminalSlotState) {
+        let chunk = slot.agentPending
+        slot.agentPending.removeAll(keepingCapacity: true)
+        guard !chunk.isEmpty else { return }
+        applyAgentBytes(chunk, to: slot)
+    }
+
+    private func scheduleAgentPublish(_ slot: TerminalSlotState) {
+        let generation = slot.agentGeneration
+        let slotID = slot.id
+        let now = ContinuousClock.now
+        let elapsed = slot.agentLastPaint.duration(to: now)
+        if !slot.agentFlushScheduled, elapsed >= .milliseconds(8) {
+            slot.agentLastPaint = now
+            agentFrame += 1
+            publishAgentLiveActivity()
+            return
+        }
+        guard !slot.agentFlushScheduled else { return }
+        slot.agentFlushScheduled = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(12))
+            guard let current = self.terminalSlots.first(where: { $0.id == slotID }) else { return }
+            guard generation == current.agentGeneration else { return }
+            current.agentFlushScheduled = false
+            guard current.agentSurface != nil else { return }
+            current.agentLastPaint = ContinuousClock.now
+            self.agentFrame += 1
+            self.publishAgentLiveActivity()
+        }
+    }
+
+    private func scheduleAgentWrite(_ slot: TerminalSlotState) {
+        guard !slot.agentWriteScheduled else { return }
+        slot.agentWriteScheduled = true
+        let slotID = slot.id
+        let previous = slot.agentWriteChain
+        slot.agentWriteChain = Task { @MainActor in
+            _ = await previous.value
+            await Task.yield()
+            guard let current = self.terminalSlots.first(where: { $0.id == slotID }) else { return }
+            current.agentWriteScheduled = false
+            let payload = current.agentOutbound
+            current.agentOutbound.removeAll(keepingCapacity: true)
+            guard !payload.isEmpty, !current.agentExited else { return }
+            if let id = current.agentSessionID, let connection = self.connection {
+                do {
+                    try await connection.writeTerminal(session: id, data: payload)
+                    current.agentWriteFailures = 0
+                } catch {
+                    var combined = payload
+                    combined.append(current.agentOutbound)
+                    current.agentOutbound = combined
+                    current.agentWriteFailures += 1
+                    guard current.agentWriteFailures < 4, !current.agentExited else { return }
+                    try? await Task.sleep(for: .milliseconds(40))
+                    if !current.agentOutbound.isEmpty { self.scheduleAgentWrite(current) }
+                    return
+                }
+            } else if current.agentProgram != nil {
+                var combined = payload
+                combined.append(current.agentOutbound)
+                current.agentOutbound = combined
+                return
+            }
+            if !current.agentOutbound.isEmpty { self.scheduleAgentWrite(current) }
+        }
+    }
+
+    private func clearAgentSlot(_ slot: TerminalSlotState) {
+        slot.agentOpenTask?.cancel()
+        slot.agentOpenTask = nil
+        slot.agentIdlePublishTask?.cancel()
+        slot.agentIdlePublishTask = nil
+        slot.agentProgram = nil
+        slot.agentLine = nil
+        slot.agentSessionID = nil
+        slot.agentGeneration += 1
+        slot.agentFlushScheduled = false
+        slot.agentLastPaint = ContinuousClock.now.advanced(by: .seconds(-5))
+        slot.agentSurface = nil
+        slot.agentExited = false
+        slot.agentExitCode = 0
+        slot.agentError = nil
+        slot.agentReceived = false
+        slot.agentPending.removeAll()
+        slot.agentOutbound.removeAll()
+        slot.agentPaused = false
+        slot.agentHostID = nil
+        slot.agentNeedsYou = false
+        slot.kind = .virtual
+    }
+
+    private func clearAllAgents(keepSlots: Bool) {
+        for slot in terminalSlots where slot.kind == .agent {
+            clearAgentSlot(slot)
+        }
+        agentEarly.removeAll()
+        agentEarlyExit.removeAll()
+        UserDefaults.standard.removeObject(forKey: "agent.sessions")
+        UserDefaults.standard.removeObject(forKey: "agent.session")
+        if !keepSlots {
+            resetTerminalSlots()
+        } else {
+            bumpSlots()
+        }
+        #if canImport(ActivityKit)
+        LiveActivityCoordinator.shared.syncAgent(
+            program: nil,
+            displayName: nil,
+            received: false,
+            paused: false,
+            exited: false,
+            title: nil,
+            recentlyWrote: false,
+            hostName: hostName,
+            force: true
+        )
+        #endif
+    }
+
+    private func rememberAgents() {
+        let payloads: [[String: String]] = terminalSlots.compactMap { slot in
+            guard slot.kind == .agent,
+                  let id = slot.agentSessionID,
+                  let program = slot.agentProgram,
+                  let line = slot.agentLine else { return nil }
+            return [
+                "id": id,
+                "program": program,
+                "line": line,
+                "cwd": slot.cwd,
+                "host": slot.agentHostID ?? hostId,
+                "slot": slot.id,
+            ]
+        }
+        if payloads.isEmpty {
+            UserDefaults.standard.removeObject(forKey: "agent.sessions")
+            UserDefaults.standard.removeObject(forKey: "agent.session")
+        } else {
+            UserDefaults.standard.set(payloads, forKey: "agent.sessions")
+            UserDefaults.standard.set(payloads[0], forKey: "agent.session")
+        }
+    }
+
+    private func restoreAgents() {
+        let defaults = UserDefaults.standard
+        let payloads: [[String: String]]
+        if let list = defaults.array(forKey: "agent.sessions") as? [[String: String]], !list.isEmpty {
+            payloads = list
+        } else if let single = defaults.dictionary(forKey: "agent.session") as? [String: String] {
+            payloads = [single]
+        } else {
+            return
+        }
+        var restored: [TerminalSlotState] = []
+        for payload in payloads.prefix(TerminalSlotBook.maxAgents) {
+            guard let id = payload["id"], let program = payload["program"], let line = payload["line"],
+                  let host = payload["host"] else { continue }
+            let slot = TerminalSlotState(id: payload["slot"] ?? UUID().uuidString, kind: .agent, cwd: payload["cwd"] ?? "/")
+            slot.agentSessionID = id
+            slot.agentProgram = program
+            slot.agentLine = line
+            slot.agentHostID = host
+            slot.agentPaused = true
+            slot.agentReceived = true
+            slot.agentSurface = AgentSurface(screen: VTScreen(columns: slot.agentColumns, rows: slot.agentRows))
+            restored.append(slot)
+        }
+        guard !restored.isEmpty else { return }
+        if TerminalSlotBook.canAdd(count: restored.count) {
+            restored.insert(TerminalSlotState.virtualWelcome(text: L10n.termWelcome), at: 0)
+        }
+        terminalSlots = Array(restored.prefix(TerminalSlotBook.maxSlots))
+        focusedSlotID = terminalSlots.first(where: { $0.kind == .agent })?.id ?? terminalSlots[0].id
+        agentFrame += 1
+        bumpSlots()
+        publishAgentLiveActivity(force: true)
+    }
+
+    private func resumeAgentsIfNeeded(host: String) async {
+        for slot in terminalSlots where slot.kind == .agent {
+            await resumeAgent(slot, host: host)
+        }
+    }
+
+    private func resumeAgent(_ slot: TerminalSlotState, host: String) async {
+        guard slot.agentHostID == host, let connection, let id = slot.agentSessionID,
+              slot.agentProgram != nil, !slot.agentExited else { return }
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                try await connection.resumeTerminal(session: id)
+                try? await connection.resizeTerminal(session: id, columns: slot.agentColumns, rows: slot.agentRows)
+                slot.agentWriteFailures = 0
+                slot.agentPaused = false
+                rememberAgents()
+                scheduleAgentWrite(slot)
+                bumpSlots()
+                publishAgentLiveActivity(force: true)
+                return
+            } catch {
+                lastError = error
+                if attempt < 2 {
+                    try? await Task.sleep(for: .milliseconds(200 * (attempt + 1)))
+                    guard self.connection === connection, !slot.agentExited else { return }
+                }
+            }
+        }
+        slot.agentPaused = false
+        slot.agentExited = true
+        slot.agentSessionID = nil
+        slot.agentError = (lastError as? ProtocolFailure)?.message ?? "That session on your Mac has ended."
+        rememberAgents()
+        bumpSlots()
+        publishAgentLiveActivity(force: true)
+    }
+
+    private func openMonitorSlot() {
+        let metas = terminalSlots.map(\.meta)
+        guard let result = TerminalSlotBook.openOrFocus(
+            slots: metas,
+            focused: focusedSlotID,
+            kind: .monitor,
+            title: "Monitor"
+        ) else {
+            notice = "Close a terminal first. You can keep up to \(TerminalSlotBook.maxSlots) open."
+            return
+        }
+        if TerminalSlotBook.first(of: .monitor, in: metas) == nil {
+            let slot = TerminalSlotState(id: result.focused, kind: .monitor)
+            terminalSlots.append(slot)
+        }
+        focusedSlotID = result.focused
+        monitorProfile = nil
+        monitorStats = nil
+        monitorBytesIn = nil
+        monitorBytesOut = nil
+        monitorSampledAt = nil
+        monitorMessage = nil
+        bumpSlots()
+        syncMonitorPolling()
+    }
+
+    private func openFetchSlot(text: String) {
+        let metas = terminalSlots.map(\.meta)
+        guard let result = TerminalSlotBook.openOrFocus(
+            slots: metas,
+            focused: focusedSlotID,
+            kind: .fetch,
+            title: "fetch"
+        ) else {
+            notice = "Close a terminal first. You can keep up to \(TerminalSlotBook.maxSlots) open."
+            return
+        }
+        if let existing = terminalSlots.first(where: { $0.kind == .fetch }) {
+            existing.fetchText = text
+            focusedSlotID = existing.id
+        } else {
+            let slot = TerminalSlotState(id: result.focused, kind: .fetch)
+            slot.fetchText = text
+            terminalSlots.append(slot)
+            focusedSlotID = slot.id
+        }
+        bumpSlots()
+        syncMonitorPolling()
+    }
+
+    func syncMonitorPolling() {
+        let shouldPoll = sessionTab == 1 && focusedSlot?.kind == .monitor
+        if shouldPoll {
+            guard monitorPollTask == nil else { return }
+            monitorPollTask = Task { @MainActor in
+                while !Task.isCancelled {
+                    guard self.sessionTab == 1, self.focusedSlot?.kind == .monitor else { break }
+                    await self.refreshMonitor()
+                    try? await Task.sleep(for: .seconds(1.5))
+                }
+                self.monitorPollTask = nil
+            }
+        } else {
+            monitorPollTask?.cancel()
+            monitorPollTask = nil
+        }
+    }
+
 
     func thumbnail(for entry: FileEntry) async -> Data? {
         guard entry.kind != .dir else { return nil }
@@ -1186,7 +1732,7 @@ final class ClientStore {
     }
 
     func beginBackgroundTaskIfNeeded() -> UIBackgroundTaskIdentifier {
-        guard !activeTransfers.isEmpty || (agentProgram != nil && !agentExited) else { return .invalid }
+        guard !activeTransfers.isEmpty || hasLiveAgent else { return .invalid }
         var token: UIBackgroundTaskIdentifier = .invalid
         token = UIApplication.shared.beginBackgroundTask {
             Task { @MainActor in
@@ -1198,7 +1744,7 @@ final class ClientStore {
                 LiveActivityCoordinator.shared.markBackgroundExpired(
                     transfers: &self.transfers,
                     hostName: self.hostName,
-                    hasLiveAgent: self.agentProgram != nil && !self.agentExited
+                    hasLiveAgent: self.hasLiveAgent
                 )
                 #endif
                 UIApplication.shared.endBackgroundTask(token)
@@ -1214,6 +1760,12 @@ final class ClientStore {
             sessionTab = 2
         case "terminal":
             sessionTab = 1
+            if let target = TerminalSlotBook.islandAgent(
+                slots: terminalSlots.map(\.meta),
+                focused: focusedSlotID
+            ) {
+                focusSlot(id: target.id)
+            }
         default:
             break
         }
@@ -1277,269 +1829,6 @@ final class ClientStore {
         UserDefaults.standard.set(current, forKey: "preventSleepWhileActive")
     }
 
-    private func beginAgent(line: String, program: String) {
-        agentOpenTask?.cancel()
-        agentOpenTask = nil
-        agentLine = line
-        agentProgram = program
-        agentHostID = hostId
-        agentSessionID = nil
-        agentPaused = false
-        UserDefaults.standard.removeObject(forKey: "agent.session")
-        agentGeneration += 1
-        agentFlushScheduled = false
-        agentLastPaint = ContinuousClock.now.advanced(by: .seconds(-5))
-        agentLastByteAt = ContinuousClock.now.advanced(by: .seconds(-5))
-        agentSurface = nil
-        agentExited = false
-        agentExitCode = 0
-        agentError = nil
-        agentReceived = false
-        agentPending.removeAll()
-        agentEarly.removeAll()
-        agentEarlyExit.removeAll()
-        agentOutbound.removeAll()
-        agentColumns = 80
-        agentRows = 24
-        publishAgentLiveActivity(force: true)
-    }
-
-    private func openAgentSession() async {
-        defer { agentOpenTask = nil }
-        guard let connection, let line = agentLine, agentSessionID == nil, agentProgram != nil else { return }
-        let columns = agentColumns
-        let rows = agentRows
-        do {
-            let id = try await connection.openTerminal(line: line, cwd: terminalCWD, columns: columns, rows: rows)
-            guard agentProgram != nil else {
-                await connection.closeTerminal(session: id)
-                return
-            }
-            agentSessionID = id
-            rememberAgent()
-            if let early = agentEarly.removeValue(forKey: id) {
-                applyAgentBytes(early)
-            }
-            if let code = agentEarlyExit.removeValue(forKey: id) {
-                agentExitCode = code
-                agentExited = true
-            }
-            if !agentExited, (agentColumns != columns || agentRows != rows) {
-                try? await connection.resizeTerminal(session: id, columns: agentColumns, rows: agentRows)
-            }
-            scheduleAgentWrite()
-        } catch {
-            agentExited = true
-            agentError = (error as? ProtocolFailure)?.message ?? "Couldn't open a terminal on this Mac."
-        }
-    }
-
-    private func handleAgentEvent(_ message: WireMessage) {
-        guard let id = message.header.session else { return }
-        switch message.header.op {
-        case Op.termData:
-            if id == agentSessionID {
-                applyAgentBytes(message.body)
-            } else if agentSessionID == nil, agentProgram != nil {
-                var existing = agentEarly[id] ?? Data()
-                existing.append(message.body)
-                agentEarly[id] = existing
-            }
-        case Op.termExit:
-            let code = message.header.exit ?? 0
-            if id == agentSessionID {
-                agentExitCode = code
-                agentExited = true
-                publishAgentLiveActivity(force: true)
-            } else if agentSessionID == nil, agentProgram != nil {
-                agentEarlyExit[id] = code
-            }
-        default:
-            break
-        }
-    }
-
-    private func applyAgentBytes(_ data: Data) {
-        guard !data.isEmpty else { return }
-        agentReceived = true
-        agentLastByteAt = ContinuousClock.now
-        guard let surface = agentSurface else {
-            agentPending.append(data)
-            return
-        }
-        // Answer cursor queries before keystrokes that arrive while this chunk is on screen.
-        // Programs ask where the cursor is before they accept a Tab completion.
-        let replies = surface.screen.ingest(data)
-        if !replies.isEmpty {
-            var combined = replies
-            combined.append(agentOutbound)
-            agentOutbound = combined
-            scheduleAgentWrite()
-        }
-        scheduleAgentPublish()
-    }
-
-    private func drainAgentPending() {
-        let chunk = agentPending
-        agentPending.removeAll(keepingCapacity: true)
-        guard !chunk.isEmpty else { return }
-        applyAgentBytes(chunk)
-    }
-
-    private func scheduleAgentPublish() {
-        let generation = agentGeneration
-        let now = ContinuousClock.now
-        let elapsed = agentLastPaint.duration(to: now)
-        // Idle → paint on the next turn so permission menus and follow-ups show immediately.
-        // Burst → coalesce to about one frame so typing / streaming does not melt the UI.
-        if !agentFlushScheduled, elapsed >= .milliseconds(8) {
-            agentLastPaint = now
-            agentFrame += 1
-            publishAgentLiveActivity()
-            return
-        }
-        guard !agentFlushScheduled else { return }
-        agentFlushScheduled = true
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(12))
-            guard generation == self.agentGeneration else { return }
-            self.agentFlushScheduled = false
-            guard self.agentSurface != nil else { return }
-            self.agentLastPaint = ContinuousClock.now
-            self.agentFrame += 1
-            self.publishAgentLiveActivity()
-        }
-    }
-
-    private func scheduleAgentWrite() {
-        guard !agentWriteScheduled else { return }
-        agentWriteScheduled = true
-        let previous = agentWriteChain
-        agentWriteChain = Task { @MainActor in
-            _ = await previous.value
-            // Yield once so a burst of keystrokes in the same turn can merge, without a fixed wait.
-            await Task.yield()
-            self.agentWriteScheduled = false
-            let payload = self.agentOutbound
-            self.agentOutbound.removeAll(keepingCapacity: true)
-            guard !payload.isEmpty, !self.agentExited else { return }
-            if let id = self.agentSessionID, let connection = self.connection {
-                do {
-                    try await connection.writeTerminal(session: id, data: payload)
-                    self.agentWriteFailures = 0
-                } catch {
-                    var combined = payload
-                    combined.append(self.agentOutbound)
-                    self.agentOutbound = combined
-                    self.agentWriteFailures += 1
-                    guard self.agentWriteFailures < 4, !self.agentExited else { return }
-                    try? await Task.sleep(for: .milliseconds(40))
-                    if !self.agentOutbound.isEmpty { self.scheduleAgentWrite() }
-                    return
-                }
-            } else if self.agentProgram != nil {
-                var combined = payload
-                combined.append(self.agentOutbound)
-                self.agentOutbound = combined
-                return
-            }
-            if !self.agentOutbound.isEmpty { self.scheduleAgentWrite() }
-        }
-    }
-
-    private func clearAgent() {
-        let lingerExited = agentExited && agentProgram != nil
-        agentOpenTask?.cancel()
-        agentOpenTask = nil
-        agentIdlePublishTask?.cancel()
-        agentIdlePublishTask = nil
-        agentProgram = nil
-        agentLine = nil
-        agentSessionID = nil
-        agentGeneration += 1
-        agentFlushScheduled = false
-        agentLastPaint = ContinuousClock.now.advanced(by: .seconds(-5))
-        agentSurface = nil
-        agentExited = false
-        agentExitCode = 0
-        agentError = nil
-        agentReceived = false
-        agentPending.removeAll()
-        agentEarly.removeAll()
-        agentEarlyExit.removeAll()
-        agentOutbound.removeAll()
-        agentPaused = false
-        agentHostID = nil
-        UserDefaults.standard.removeObject(forKey: "agent.session")
-        #if canImport(ActivityKit)
-        if !lingerExited {
-            LiveActivityCoordinator.shared.syncAgent(
-                program: nil,
-                displayName: nil,
-                received: false,
-                paused: false,
-                exited: false,
-                title: nil,
-                recentlyWrote: false,
-                hostName: hostName,
-                force: true
-            )
-        }
-        #endif
-    }
-
-    private func rememberAgent() {
-        guard let id = agentSessionID, let program = agentProgram, let line = agentLine else { return }
-        UserDefaults.standard.set(
-            ["id": id, "program": program, "line": line, "cwd": terminalCWD, "host": agentHostID ?? hostId],
-            forKey: "agent.session"
-        )
-    }
-
-    private func restoreAgent() {
-        guard let payload = UserDefaults.standard.dictionary(forKey: "agent.session") as? [String: String],
-              let id = payload["id"], let program = payload["program"], let line = payload["line"],
-              let host = payload["host"] else { return }
-        agentSessionID = id
-        agentProgram = program
-        agentLine = line
-        agentHostID = host
-        agentPaused = true
-        agentReceived = true
-        if let cwd = payload["cwd"], !cwd.isEmpty { terminalCWD = cwd }
-        agentSurface = AgentSurface(screen: VTScreen(columns: agentColumns, rows: agentRows))
-        agentFrame += 1
-        publishAgentLiveActivity(force: true)
-    }
-
-    private func resumeAgentIfNeeded(host: String) async {
-        guard agentHostID == host, let connection, let id = agentSessionID, agentProgram != nil, !agentExited else { return }
-        var lastError: Error?
-        for attempt in 0..<3 {
-            do {
-                try await connection.resumeTerminal(session: id)
-                try? await connection.resizeTerminal(session: id, columns: agentColumns, rows: agentRows)
-                agentWriteFailures = 0
-                agentPaused = false
-                rememberAgent()
-                scheduleAgentWrite()
-                publishAgentLiveActivity(force: true)
-                return
-            } catch {
-                lastError = error
-                if attempt < 2 {
-                    try? await Task.sleep(for: .milliseconds(200 * (attempt + 1)))
-                    guard self.connection === connection, !agentExited else { return }
-                }
-            }
-        }
-        agentPaused = false
-        agentExited = true
-        agentSessionID = nil
-        UserDefaults.standard.removeObject(forKey: "agent.session")
-        agentError = (lastError as? ProtocolFailure)?.message ?? "That session on your Mac has ended."
-        publishAgentLiveActivity(force: true)
-    }
 
     private func enableDemo() {
         let files = MemoryFileProvider()
@@ -1553,8 +1842,7 @@ final class ClientStore {
         hostId = "demo"
         connected = true
         path = "/"
-        terminalCWD = "/"
-        terminalLines = [TermLine(text: L10n.termWelcome, kind: .dim)]
+        resetTerminalSlots()
         Task { try? await refresh() }
     }
 
@@ -1569,8 +1857,13 @@ final class ClientStore {
         showCommandHelp = false
         clearFileSearch()
         connection = nil
-        if agentProgram != nil, !agentExited {
-            agentPaused = true
+        var pausedAny = false
+        for slot in terminalSlots where slot.isLiveAgent {
+            slot.agentPaused = true
+            pausedAny = true
+        }
+        if pausedAny {
+            bumpSlots()
             publishAgentLiveActivity(force: true)
         }
         guard connected, !intentionalDisconnect else { return }
@@ -1728,46 +2021,67 @@ final class ClientStore {
 
     private func publishAgentLiveActivity(force: Bool = false) {
         #if canImport(ActivityKit)
+        let meta = TerminalSlotBook.islandAgent(
+            slots: terminalSlots.map(\.meta),
+            focused: focusedSlotID
+        )
+        guard let meta,
+              let slot = terminalSlots.first(where: { $0.id == meta.id }),
+              slot.kind == .agent else {
+            LiveActivityCoordinator.shared.syncAgent(
+                program: nil,
+                displayName: nil,
+                received: false,
+                paused: false,
+                exited: false,
+                title: nil,
+                recentlyWrote: false,
+                hostName: hostName,
+                force: force
+            )
+            return
+        }
         let now = ContinuousClock.now
-        let idleFor = agentLastByteAt.duration(to: now)
+        let idleFor = slot.agentLastByteAt.duration(to: now)
         let recentlyWrote = idleFor < .milliseconds(400)
-        let screenTail = agentSurface.map { AgentScreenHint.tail(from: $0.screen.plainText()) }
+        let screenTail = slot.agentSurface.map { AgentScreenHint.tail(from: $0.screen.plainText()) }
         LiveActivityCoordinator.shared.syncAgent(
-            program: agentProgram,
-            displayName: agentProgram.map { AgentPrograms.displayName($0) },
-            received: agentReceived,
-            paused: agentPaused,
-            exited: agentExited,
-            title: agentSurface?.screen.title,
+            program: slot.agentProgram,
+            displayName: slot.agentProgram.map { AgentPrograms.displayName($0) },
+            received: slot.agentReceived,
+            paused: slot.agentPaused,
+            exited: slot.agentExited,
+            title: slot.agentSurface?.screen.title,
             recentlyWrote: recentlyWrote,
             idleFor: idleFor,
             screenTail: screenTail,
             hostName: hostName,
             force: force
         )
-        // Only arm the idle flip while output is still "fresh".
         if idleFor < .milliseconds(1_500) {
-            scheduleAgentIdlePublish()
+            scheduleAgentIdlePublish(slot)
         } else {
-            agentIdlePublishTask?.cancel()
-            agentIdlePublishTask = nil
+            slot.agentIdlePublishTask?.cancel()
+            slot.agentIdlePublishTask = nil
         }
         #endif
     }
 
     /// Flip Island to Waiting once the PTY has been quiet — paint only runs on bytes.
-    private func scheduleAgentIdlePublish() {
+    private func scheduleAgentIdlePublish(_ slot: TerminalSlotState) {
         #if canImport(ActivityKit)
-        agentIdlePublishTask?.cancel()
-        guard agentProgram != nil, !agentExited, !agentPaused else { return }
-        let generation = agentGeneration
-        let byteStamp = agentLastByteAt
-        agentIdlePublishTask = Task { @MainActor in
+        slot.agentIdlePublishTask?.cancel()
+        guard slot.agentProgram != nil, !slot.agentExited, !slot.agentPaused else { return }
+        let generation = slot.agentGeneration
+        let byteStamp = slot.agentLastByteAt
+        let slotID = slot.id
+        slot.agentIdlePublishTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(1_600))
             guard !Task.isCancelled else { return }
-            guard generation == self.agentGeneration else { return }
-            guard self.agentProgram != nil, !self.agentExited else { return }
-            guard self.agentLastByteAt == byteStamp else { return }
+            guard let current = self.terminalSlots.first(where: { $0.id == slotID }) else { return }
+            guard generation == current.agentGeneration else { return }
+            guard current.agentProgram != nil, !current.agentExited else { return }
+            guard current.agentLastByteAt == byteStamp else { return }
             self.publishAgentLiveActivity(force: true)
         }
         #endif
@@ -1831,13 +2145,9 @@ final class ClientStore {
         case "exit":
             sessionTab = 0
         case "monitor":
-            monitorProfile = nil
-            monitorStats = nil
-            monitorBytesIn = nil
-            monitorBytesOut = nil
-            monitorSampledAt = nil
-            monitorMessage = nil
-            showMonitor = true
+            openMonitorSlot()
+        case "fetch":
+            break
         case "open", "preview", "get":
             guard let path = action.path, let virtual = try? VirtualPath.parse(path) else { return }
             let name = virtual.components.last ?? "file"

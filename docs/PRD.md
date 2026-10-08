@@ -349,6 +349,7 @@ The terminal looks like a shell but is a **command interpreter implemented in `T
 - `help` opens a scrollable tappable catalog that shows each command’s typed syntax (flags and placeholders) and inserts a starter line (for example `get ` or `cd `). The scrollback gets a short tip instead of dumping the full list again. Path and command suggestions use the same scrollable menu height.
 - Accessory key row above the software keyboard: keyboard show/hide, `Tab`, `Esc`, `Ctrl`, `↑`, `↓`, `/`, `~`, `-`, `|`. Hiding the keyboard returns that space to the transcript. Esc dismisses the suggestion or help menu first.
 - Output of `open` and `preview` presents the QuickLook sheet over the terminal.
+- **Terminal slots (v2.4):** up to three reorderable slots inside the Terminal tab. Each slot is a virtual shell, a live coding agent, the system Monitor (`htop` / `btop`), or a pinned `fetch` snapshot. Only one slot is interactive at a time; inactive slots keep their state. `htop` / `btop` and `fetch` / `neofetch` open or focus their slot (they do not use a full-screen cover that hides other slots). Soft cap three; refuse with a clear message when full.
 
 ### 13.3 Commands (v1)
 
@@ -385,7 +386,8 @@ Typing `claude`, `cursor`, `agent`, `codex`, or another name in `AgentPrograms` 
 - Opening the software keyboard must not change the remote rows/columns. Claude Code, Codex, and Cursor CLI draw permission menus at the bottom of the screen; a shrink-on-keyboard resize was wiping them until the next keystroke. The phone keeps the last full PTY size while the keyboard is up. The agent key row includes `S-Tab`, `Y`, and `N` for those prompts.
 - `term.exec` does not launch these programs. They need the live screen.
 - Shell syntax (`|`, `;`, `` ` ``, `$`) stays on the one-shot path so a live session cannot be turned into a script.
-- Closing the session from the phone (the Terminal close control) sends SIGHUP. Switching to Files or Transfers (header folder control, or the tab bar once you leave Terminal), or switching apps, does not: the process keeps running on the Mac. While the live agent is on the Terminal tab the tab bar is hidden; it returns when you leave Terminal, with a Live badge on Terminal, and the phone rejoins the live screen when you return.
+- Closing the session from the phone (the Terminal close control) sends SIGHUP. Switching to Files or Transfers (header folder control, or the tab bar once you leave Terminal), switching to another terminal slot, or switching apps, does not: the process keeps running on the Mac. While a live agent slot is focused on the Terminal tab the root tab bar is hidden; it returns when you leave Terminal or focus a non-agent slot, with a Live badge on Terminal while any agent is still running, and the phone rejoins that agent’s screen when you return to its slot.
+- Up to three concurrent live agents per connection (aligned with the slot cap). Session IDs on `term.*` demux bytes to the matching slot. The Dynamic Island still shows one agent chip: the focused agent, or else the agent with highest urgency (`Needs you` first).
 - Terminal bytes are never logged.
 
 ---

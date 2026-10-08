@@ -4,46 +4,59 @@ import UIKit
 
 struct MonitorScreen: View {
     @Bindable var store: ClientStore
+    var embedded = false
 
     var body: some View {
-        NavigationStack {
-            GeometryReader { geo in
-                let width = max(0, geo.size.width - 32)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        summary
-                        temperatureBox
-                        if let message = store.monitorMessage, store.monitorStats == nil {
-                            Text(message)
-                                .font(.body)
-                                .foregroundStyle(TerminalTheme.standard.error)
-                                .fixedSize(horizontal: false, vertical: true)
+        Group {
+            if embedded {
+                monitorBody
+            } else {
+                NavigationStack {
+                    monitorBody
+                        .navigationTitle("Monitor")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Close") { store.closeMonitorSlot() }
+                            }
                         }
-                        cpuBox(width: width)
-                        memoryBox
-                        diskBox
-                        networkBox
-                        processBox(width: width)
-                    }
-                    .padding(16)
-                    .frame(width: geo.size.width, alignment: .leading)
-                }
-            }
-            .background(TerminalTheme.standard.bg)
-            .navigationTitle("Monitor")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Close") { store.showMonitor = false }
                 }
             }
         }
-        .task {
+        .task(id: embedded ? "embedded" : "cover") {
+            // Embedded mode is polled by ClientStore.syncMonitorPolling so inactive slots stay quiet.
+            guard !embedded else { return }
             while !Task.isCancelled {
                 await store.refreshMonitor()
                 try? await Task.sleep(for: .seconds(1.5))
             }
         }
+    }
+
+    private var monitorBody: some View {
+        GeometryReader { geo in
+            let width = max(0, geo.size.width - 32)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    summary
+                    temperatureBox
+                    if let message = store.monitorMessage, store.monitorStats == nil {
+                        Text(message)
+                            .font(.body)
+                            .foregroundStyle(TerminalTheme.standard.error)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    cpuBox(width: width)
+                    memoryBox
+                    diskBox
+                    networkBox
+                    processBox(width: width)
+                }
+                .padding(16)
+                .frame(width: geo.size.width, alignment: .leading)
+            }
+        }
+        .background(TerminalTheme.standard.bg)
     }
 
     private var summary: some View {
