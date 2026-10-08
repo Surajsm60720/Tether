@@ -283,7 +283,7 @@ import Testing
 }
 
 @Test func v1E2E_changelogListsEveryShippedVersion() throws {
-    #expect(AppChangelog.current == "2.4")
+    #expect(AppChangelog.current == "2.5")
     let versions = Set(AppChangelog.releases.map(\.version))
     #expect(versions.contains("1.0"))
     #expect(versions.contains("1.1"))
@@ -293,6 +293,7 @@ import Testing
     #expect(versions.contains("2.2"))
     #expect(versions.contains("2.3"))
     #expect(versions.contains("2.4"))
+    #expect(versions.contains("2.5"))
     let v1 = try #require(AppChangelog.releases.first { $0.version == "1.0" })
     #expect(v1.items.count >= 8)
     let v2 = try #require(AppChangelog.releases.first { $0.version == "2.0" })
@@ -305,6 +306,8 @@ import Testing
     #expect(v22.items.contains(where: { $0.localizedCaseInsensitiveContains("Files search") || $0.localizedCaseInsensitiveContains("across every shared") }))
     let v24 = try #require(AppChangelog.releases.first { $0.version == "2.4" })
     #expect(v24.items.contains(where: { $0.localizedCaseInsensitiveContains("slot") }))
+    let v25 = try #require(AppChangelog.releases.first { $0.version == "2.5" })
+    #expect(v25.items.contains(where: { $0.localizedCaseInsensitiveContains("allowlist") || $0.localizedCaseInsensitiveContains("symlink") }))
 }
 
 @Test func v1E2E_terminalCommandSurfaceMatchesHelp() async {
@@ -381,6 +384,7 @@ private final class E2EHost: HostServing, @unchecked Sendable {
 
     func openTerminal(
         id: String,
+        deviceId: String,
         line: String,
         cwd: String,
         columns: Int,
@@ -388,19 +392,30 @@ private final class E2EHost: HostServing, @unchecked Sendable {
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
     ) async throws -> UInt64 {
+        _ = deviceId
         onData(Data("ready\r\n".utf8))
         onExit(0)
         return 1
     }
-    func writeTerminal(id: String, data: Data) async {}
-    func resizeTerminal(id: String, columns: Int, rows: Int) async {}
-    func closeTerminal(id: String) async {}
+    func writeTerminal(id: String, deviceId: String, data: Data) async throws {
+        _ = deviceId
+    }
+    func resizeTerminal(id: String, deviceId: String, columns: Int, rows: Int) async throws {
+        _ = deviceId
+    }
+    func closeTerminal(id: String, deviceId: String) async throws {
+        _ = deviceId
+    }
     func suspendTerminal(id: String, generation: UInt64) async {}
     func resumeTerminal(
         id: String,
+        deviceId: String,
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
-    ) async -> UInt64? { nil }
+    ) async throws -> UInt64? {
+        _ = deviceId
+        return nil
+    }
     func preventSleepWhileActive() -> Bool { true }
     func setPreventSleepWhileActive(_ value: Bool) {}
 }

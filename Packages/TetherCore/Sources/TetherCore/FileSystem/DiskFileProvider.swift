@@ -235,17 +235,49 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
         guard share.share.writable else {
             throw ProtocolFailure(code: .readOnly, message: "This folder is read-only.")
         }
-        var url = share.url
-        for part in path.components.dropFirst() {
-            url = url.appendingPathComponent(part)
-            guard Self.contains(url, in: share.url) else {
-                throw ProtocolFailure(code: .outsideShare, message: "That path isn't available.")
+        let root = share.url
+        var current = root
+        let parts = Array(path.components.dropFirst())
+        guard let leaf = parts.last else {
+            throw ProtocolFailure(code: .badRequest, message: "Choose a folder inside a share.")
+        }
+        let parents = Array(parts.dropLast())
+        for part in parents {
+            let next = current.appendingPathComponent(part)
+            var isDir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: next.path, isDirectory: &isDir)
+            if exists {
+                let values = try? next.resourceValues(forKeys: [.isSymbolicLinkKey, .isAliasFileKey])
+                if values?.isSymbolicLink == true || values?.isAliasFile == true {
+                    throw ProtocolFailure(code: .outsideShare, message: "That path isn't available.")
+                }
+                let resolved = next.resolvingSymlinksInPath().standardizedFileURL
+                guard Self.contains(resolved, in: root), isDir.boolValue else {
+                    throw ProtocolFailure(code: .outsideShare, message: "That path isn't available.")
+                }
+                current = resolved
+            } else if createParents {
+                let candidate = next.standardizedFileURL
+                guard Self.contains(candidate, in: root) else {
+                    throw ProtocolFailure(code: .outsideShare, message: "That path isn't available.")
+                }
+                try FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: false)
+                current = candidate
+            } else {
+                throw ProtocolFailure(code: .notFound, message: "That folder isn't here.")
             }
         }
-        if !createParents, !FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path) {
-            throw ProtocolFailure(code: .notFound, message: "That folder isn't here.")
+        let destination = current.appendingPathComponent(leaf).standardizedFileURL
+        guard Self.contains(destination, in: root) else {
+            throw ProtocolFailure(code: .outsideShare, message: "That path isn't available.")
         }
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: createParents)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            var isDir: ObjCBool = false
+            _ = FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDir)
+            if isDir.boolValue { return }
+            throw ProtocolFailure(code: .badRequest, message: "A file with that name is already there.")
+        }
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
     }
 
     public func remove(path: VirtualPath, recursive: Bool) async throws {

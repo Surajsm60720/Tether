@@ -313,6 +313,29 @@ import Testing
     #expect(String(data: try Data(contentsOf: outside), encoding: .utf8) == "hidden")
 }
 
+@Test func diskProviderRejectsMkdirThroughOutboundSymlink() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("tether-mkdir-\(UUID().uuidString)", isDirectory: true)
+    let share = root.appendingPathComponent("share", isDirectory: true)
+    let outside = root.appendingPathComponent("outside", isDirectory: true)
+    try FileManager.default.createDirectory(at: share, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(
+        at: share.appendingPathComponent("escape"),
+        withDestinationURL: outside
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let provider = DiskFileProvider(shares: [MountedShare(name: "share", root: share, writable: true)])
+    await #expect(throws: ProtocolFailure.self) {
+        try await provider.makeDirectory(
+            path: try VirtualPath.parse("/share/escape/pwned"),
+            createParents: true
+        )
+    }
+    let planted = outside.appendingPathComponent("pwned")
+    #expect(!FileManager.default.fileExists(atPath: planted.path))
+}
+
 @Test func diskUploadRejectsOutOfRangeChunkAndAbortAll() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("tether-upload-\(UUID().uuidString)", isDirectory: true)
     let share = root.appendingPathComponent("share", isDirectory: true)
@@ -432,6 +455,7 @@ final class TestHost: HostServing, @unchecked Sendable {
     var preventSleep = true
     func openTerminal(
         id: String,
+        deviceId: String,
         line: String,
         cwd: String,
         columns: Int,
@@ -439,11 +463,13 @@ final class TestHost: HostServing, @unchecked Sendable {
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
     ) async throws -> UInt64 {
+        _ = deviceId
         onData(Data("ready\r\n".utf8))
         onExit(0)
         return 1
     }
-    func writeTerminal(id: String, data: Data) async {
+    func writeTerminal(id: String, deviceId: String, data: Data) async throws {
+        _ = deviceId
         recordWrite(data)
     }
 
@@ -452,11 +478,21 @@ final class TestHost: HostServing, @unchecked Sendable {
         terminalWrites.append(data)
         lock.unlock()
     }
-    func resizeTerminal(id: String, columns: Int, rows: Int) async {}
-    func closeTerminal(id: String) async {}
+    func resizeTerminal(id: String, deviceId: String, columns: Int, rows: Int) async throws {
+        _ = deviceId
+    }
+    func closeTerminal(id: String, deviceId: String) async throws {
+        _ = deviceId
+    }
     func suspendTerminal(id: String, generation: UInt64) async {}
-    func resumeTerminal(id: String, onData: @escaping @Sendable (Data) -> Void, onExit: @escaping @Sendable (Int32) -> Void) async -> UInt64? {
-        nil
+    func resumeTerminal(
+        id: String,
+        deviceId: String,
+        onData: @escaping @Sendable (Data) -> Void,
+        onExit: @escaping @Sendable (Int32) -> Void
+    ) async throws -> UInt64? {
+        _ = deviceId
+        return nil
     }
     func preventSleepWhileActive() -> Bool { preventSleep }
     func setPreventSleepWhileActive(_ value: Bool) { preventSleep = value }

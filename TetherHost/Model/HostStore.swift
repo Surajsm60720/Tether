@@ -878,6 +878,7 @@ final class HostRuntime: HostServing, @unchecked Sendable {
 
     func openTerminal(
         id: String,
+        deviceId: String,
         line: String,
         cwd: String,
         columns: Int,
@@ -885,17 +886,15 @@ final class HostRuntime: HostServing, @unchecked Sendable {
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
     ) async throws -> UInt64 {
-        try sync {
-            if agents[id] == nil, agents.count >= TerminalSlotBook.maxAgents {
-                throw ProtocolFailure(
-                    code: .internalError,
-                    message: "Close a terminal first. This Mac allows \(TerminalSlotBook.maxAgents) live agents at once."
-                )
-            }
+        // Re-validate on the host so a future caller cannot skip the Session gate.
+        guard !deviceId.isEmpty, AgentPrograms.programName(in: line) != nil else {
+            throw ProtocolFailure(code: .badRequest, message: "That program can't be opened from this iPhone.")
         }
         let directory = try workingDirectory(cwd)
+        guard let script = AgentPrograms.shellScript(line: line, directory: directory.path) else {
+            throw ProtocolFailure(code: .badRequest, message: "That program can't be opened from this iPhone.")
+        }
         let scoped = directory.startAccessingSecurityScopedResource()
-        let script = AgentPrograms.shellScript(line: line, directory: directory.path)
         let bridge = TerminalBridge()
         let generation = bridge.resume(onData: onData, onExit: { [weak self] code in
             onExit(code)
@@ -914,21 +913,45 @@ final class HostRuntime: HostServing, @unchecked Sendable {
             if scoped { directory.stopAccessingSecurityScopedResource() }
             throw ProtocolFailure(code: .internalError, message: "Couldn't open a terminal on this Mac.")
         }
-        let live = LiveAgent(session: session, bridge: bridge, folder: directory, scoped: scoped)
-        let replaced: LiveAgent? = sync {
+        let live = LiveAgent(
+            session: session,
+            bridge: bridge,
+            folder: directory,
+            scoped: scoped,
+            ownerDeviceId: deviceId
+        )
+        // Admit under the lock after spawn so concurrent opens cannot exceed the cap.
+        enum Admission {
+            case accepted(replaced: LiveAgent?)
+            case rejected
+        }
+        let admission: Admission = sync {
+            if agents[id] == nil, agents.count >= TerminalSlotBook.maxAgents {
+                return .rejected
+            }
             let previous = agents[id]
             agents[id] = live
-            return previous
+            return .accepted(replaced: previous)
         }
-        // Same session id was replaced in the map — tear down the old PTY without removing the new entry.
-        if let replaced {
-            replaced.session.terminate()
-            if replaced.scoped {
-                replaced.folder.stopAccessingSecurityScopedResource()
+        switch admission {
+        case .rejected:
+            session.terminate()
+            if scoped { directory.stopAccessingSecurityScopedResource() }
+            throw ProtocolFailure(
+                code: .internalError,
+                message: "Close a terminal first. This Mac allows \(TerminalSlotBook.maxAgents) live agents at once."
+            )
+        case let .accepted(replaced):
+            // Same session id was replaced — tear down the old PTY without removing the new entry.
+            if let replaced {
+                replaced.session.terminate()
+                if replaced.scoped {
+                    replaced.folder.stopAccessingSecurityScopedResource()
+                }
             }
+            onEvent?(.activityChanged)
+            return generation
         }
-        onEvent?(.activityChanged)
-        return generation
     }
 
     func suspendTerminal(id: String, generation: UInt64) async {
@@ -937,10 +960,17 @@ final class HostRuntime: HostServing, @unchecked Sendable {
 
     func resumeTerminal(
         id: String,
+        deviceId: String,
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
-    ) async -> UInt64? {
-        let bridge = sync { agents[id]?.bridge }
+    ) async throws -> UInt64? {
+        let bridge: TerminalBridge? = try sync {
+            guard let live = agents[id] else { return nil }
+            guard live.ownerDeviceId == deviceId else {
+                throw ProtocolFailure(code: .denied, message: "That terminal belongs to another iPhone.")
+            }
+            return live.bridge
+        }
         guard let bridge else { return nil }
         return bridge.resume(onData: onData, onExit: { [weak self] code in
             onExit(code)
@@ -948,16 +978,37 @@ final class HostRuntime: HostServing, @unchecked Sendable {
         })
     }
 
-    func writeTerminal(id: String, data: Data) async {
-        sync { agents[id]?.session }?.write(data)
+    func writeTerminal(id: String, deviceId: String, data: Data) async throws {
+        let session: PTYSession? = try sync {
+            guard let live = agents[id] else { return nil }
+            guard live.ownerDeviceId == deviceId else {
+                throw ProtocolFailure(code: .denied, message: "That terminal belongs to another iPhone.")
+            }
+            return live.session
+        }
+        session?.write(data)
     }
 
-    func resizeTerminal(id: String, columns: Int, rows: Int) async {
-        sync { agents[id]?.session }?.resize(columns: columns, rows: rows)
+    func resizeTerminal(id: String, deviceId: String, columns: Int, rows: Int) async throws {
+        let session: PTYSession? = try sync {
+            guard let live = agents[id] else { return nil }
+            guard live.ownerDeviceId == deviceId else {
+                throw ProtocolFailure(code: .denied, message: "That terminal belongs to another iPhone.")
+            }
+            return live.session
+        }
+        session?.resize(columns: columns, rows: rows)
     }
 
-    func closeTerminal(id: String) async {
-        sync { agents[id]?.session }?.terminate()
+    func closeTerminal(id: String, deviceId: String) async throws {
+        let session: PTYSession? = try sync {
+            guard let live = agents[id] else { return nil }
+            guard live.ownerDeviceId == deviceId else {
+                throw ProtocolFailure(code: .denied, message: "That terminal belongs to another iPhone.")
+            }
+            return live.session
+        }
+        session?.terminate()
     }
 
     private func releaseAgent(_ id: String) {

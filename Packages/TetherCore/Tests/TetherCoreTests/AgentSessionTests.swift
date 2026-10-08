@@ -6,7 +6,6 @@ import Testing
 @Test func agentProgramNamesStayOnTheLivePath() {
     #expect(AgentPrograms.programName(in: "claude") == "claude")
     #expect(AgentPrograms.programName(in: "  Claude --resume  ") == "claude")
-    #expect(AgentPrograms.programName(in: "/Users/me/.local/bin/codex") == "codex")
     #expect(AgentPrograms.programName(in: "cursor agent") == "cursor")
     #expect(AgentPrograms.programName(in: "sudo agent") == "agent")
     #expect(AgentPrograms.programName(in: "echo claude") == nil)
@@ -14,7 +13,13 @@ import Testing
     #expect(AgentPrograms.programName(in: "claude; rm -rf /") == nil)
     #expect(AgentPrograms.programName(in: "claude\nrm") == nil)
     #expect(AgentPrograms.programName(in: "ls") == nil)
-    #expect(AgentPrograms.shellScript(line: "claude", directory: "/Users/o'brien/code") == "cd '/Users/o'\\''brien/code' && exec claude")
+    // Path-shaped tokens must not become live PTYs (planted binaries in a share).
+    #expect(AgentPrograms.programName(in: "/Users/me/.local/bin/codex") == nil)
+    #expect(AgentPrograms.programName(in: "./claude") == nil)
+    #expect(AgentPrograms.programName(in: "~/bin/claude") == nil)
+    #expect(AgentPrograms.shellScript(line: "claude --resume", directory: "/Users/o'brien/code") == "cd '/Users/o'\\''brien/code' && exec claude '--resume'")
+    #expect(AgentPrograms.shellScript(line: "sudo claude", directory: "/tmp") == "cd '/tmp' && exec claude")
+    #expect(AgentPrograms.shellScript(line: "./claude", directory: "/tmp") == nil)
     #expect(AgentPrograms.displayName("claude") == "Claude Code")
     #expect(AgentPrograms.displayName("agent") == "Cursor")
 }
@@ -398,6 +403,7 @@ private final class MultiAgentTestHost: HostServing, @unchecked Sendable {
     var keys: [String: SymmetricKey] = [:]
     private let lock = NSLock()
     private var exits: [String: @Sendable (Int32) -> Void] = [:]
+    private var owners: [String: String] = [:]
     private var writesByID: [String: [Data]] = [:]
 
     init(offer: PairingOffer?, files: MemoryFileProvider) {
@@ -440,6 +446,7 @@ private final class MultiAgentTestHost: HostServing, @unchecked Sendable {
 
     func openTerminal(
         id: String,
+        deviceId: String,
         line: String,
         cwd: String,
         columns: Int,
@@ -447,28 +454,42 @@ private final class MultiAgentTestHost: HostServing, @unchecked Sendable {
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
     ) async throws -> UInt64 {
-        try register(id: id, onExit: onExit)
+        try register(id: id, deviceId: deviceId, onExit: onExit)
         onData(Data("ready\r\n".utf8))
         return 1
     }
 
-    func writeTerminal(id: String, data: Data) async {
+    func writeTerminal(id: String, deviceId: String, data: Data) async throws {
+        try authorize(id: id, deviceId: deviceId)
         recordWrite(id: id, data: data)
     }
 
-    func resizeTerminal(id: String, columns: Int, rows: Int) async {}
-    func closeTerminal(id: String) async {
+    func resizeTerminal(id: String, deviceId: String, columns: Int, rows: Int) async throws {
+        try authorize(id: id, deviceId: deviceId)
+    }
+    func closeTerminal(id: String, deviceId: String) async throws {
+        try authorize(id: id, deviceId: deviceId)
         takeExit(id)?(0)
     }
 
-    private func register(id: String, onExit: @escaping @Sendable (Int32) -> Void) throws {
+    private func register(id: String, deviceId: String, onExit: @escaping @Sendable (Int32) -> Void) throws {
         lock.lock()
         defer { lock.unlock() }
         if exits[id] == nil, exits.count >= TerminalSlotBook.maxAgents {
             throw ProtocolFailure(code: .internalError, message: "Close a terminal first.")
         }
         exits[id] = onExit
+        owners[id] = deviceId
         writesByID[id] = []
+    }
+
+    private func authorize(id: String, deviceId: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let owner = owners[id] else { return }
+        guard owner == deviceId else {
+            throw ProtocolFailure(code: .denied, message: "That terminal belongs to another iPhone.")
+        }
     }
 
     private func recordWrite(id: String, data: Data) {
@@ -480,15 +501,18 @@ private final class MultiAgentTestHost: HostServing, @unchecked Sendable {
     private func takeExit(_ id: String) -> (@Sendable (Int32) -> Void)? {
         lock.lock()
         defer { lock.unlock() }
+        owners[id] = nil
         return exits.removeValue(forKey: id)
     }
     func suspendTerminal(id: String, generation: UInt64) async {}
     func resumeTerminal(
         id: String,
+        deviceId: String,
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
-    ) async -> UInt64? {
-        nil
+    ) async throws -> UInt64? {
+        try authorize(id: id, deviceId: deviceId)
+        return nil
     }
     func preventSleepWhileActive() -> Bool { true }
     func setPreventSleepWhileActive(_ value: Bool) {}

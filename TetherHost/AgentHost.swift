@@ -47,11 +47,14 @@ final class LiveAgent {
     let bridge: TerminalBridge
     let folder: URL
     var scoped: Bool
+    /// Paired phone that opened this session; input/resume/close must match.
+    let ownerDeviceId: String
 
-    init(session: PTYSession, bridge: TerminalBridge, folder: URL, scoped: Bool) {
+    init(session: PTYSession, bridge: TerminalBridge, folder: URL, scoped: Bool, ownerDeviceId: String) {
         self.session = session
         self.bridge = bridge
         self.folder = folder
         self.scoped = scoped
+        self.ownerDeviceId = ownerDeviceId
     }
 }

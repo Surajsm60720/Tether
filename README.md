@@ -1,6 +1,6 @@
 # Tether
 
-Version 2.4.
+Version 2.5.
 
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
@@ -243,6 +243,15 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 ## Changelog
 
 The same notes are in Settings → What's new on both the Mac and the iPhone.
+
+### 2.5
+
+Security hardening for live agents and shared folders.
+
+- Agents launch only as bare allowlisted names; path-shaped tokens like `./claude` are rejected.
+- The Mac re-checks the allowlist and runs a sanitized command line.
+- `mkdir` no longer follows outbound symlinks out of a share.
+- Each live terminal is bound to the iPhone that opened it.
 
 ### 2.4
 

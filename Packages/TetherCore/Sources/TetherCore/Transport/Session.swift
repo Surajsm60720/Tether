@@ -43,8 +43,10 @@ public protocol HostServing: Sendable {
     func runShell(line: String, cwd: String) async -> TerminalResult?
     /// Opens a live terminal for a coding agent. `onData` and `onExit` may run on a background queue.
     /// Returns a bridge generation the session must pass to `suspendTerminal`.
+    /// `deviceId` owns the session; later input/resume/close must present the same id.
     func openTerminal(
         id: String,
+        deviceId: String,
         line: String,
         cwd: String,
         columns: Int,
@@ -52,13 +54,19 @@ public protocol HostServing: Sendable {
         onData: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
     ) async throws -> UInt64
-    func writeTerminal(id: String, data: Data) async
-    func resizeTerminal(id: String, columns: Int, rows: Int) async
-    func closeTerminal(id: String) async
+    func writeTerminal(id: String, deviceId: String, data: Data) async throws
+    func resizeTerminal(id: String, deviceId: String, columns: Int, rows: Int) async throws
+    func closeTerminal(id: String, deviceId: String) async throws
     /// Keeps the agent process running when the phone's connection drops.
     func suspendTerminal(id: String, generation: UInt64) async
-    /// Attaches a new connection to an agent that is still running. Returns nil if that session is gone.
-    func resumeTerminal(id: String, onData: @escaping @Sendable (Data) -> Void, onExit: @escaping @Sendable (Int32) -> Void) async -> UInt64?
+    /// Attaches a new connection to an agent that is still running. Returns nil if that session is gone
+    /// or owned by another device.
+    func resumeTerminal(
+        id: String,
+        deviceId: String,
+        onData: @escaping @Sendable (Data) -> Void,
+        onExit: @escaping @Sendable (Int32) -> Void
+    ) async throws -> UInt64?
     func preventSleepWhileActive() -> Bool
     func setPreventSleepWhileActive(_ value: Bool)
 }
@@ -414,6 +422,7 @@ private actor HostSession {
             do {
                 generation = try await server.openTerminal(
                     id: id,
+                    deviceId: deviceId,
                     line: line,
                     cwd: cwd,
                     columns: columns,
@@ -432,24 +441,29 @@ private actor HostSession {
             try await send(WireMessage(kind: .response, header: header))
         case Op.termInput:
             guard let id = message.header.session, !id.isEmpty else { throw ProtocolFailure.malformed }
-            await server.writeTerminal(id: id, data: message.body)
+            try await server.writeTerminal(id: id, deviceId: deviceId, data: message.body)
             try await send(WireMessage(kind: .response, header: header))
         case Op.termResize:
             guard let id = message.header.session, !id.isEmpty else { throw ProtocolFailure.malformed }
             let columns = min(500, max(2, message.header.columns ?? 80))
             let rows = min(200, max(2, message.header.rows ?? 24))
-            await server.resizeTerminal(id: id, columns: columns, rows: rows)
+            try await server.resizeTerminal(id: id, deviceId: deviceId, columns: columns, rows: rows)
             try await send(WireMessage(kind: .response, header: header))
         case Op.termClose:
             guard let id = message.header.session, !id.isEmpty else { throw ProtocolFailure.malformed }
-            await server.closeTerminal(id: id)
+            try await server.closeTerminal(id: id, deviceId: deviceId)
             terminalIDs.removeAll { $0 == id }
             terminalGens[id] = nil
             try await send(WireMessage(kind: .response, header: header))
         case Op.termResume:
             guard let id = message.header.session, !id.isEmpty else { throw ProtocolFailure.malformed }
             let pump = startTerminalPump(session: id)
-            guard let generation = await server.resumeTerminal(id: id, onData: pump.data, onExit: pump.exit) else {
+            guard let generation = try await server.resumeTerminal(
+                id: id,
+                deviceId: deviceId,
+                onData: pump.data,
+                onExit: pump.exit
+            ) else {
                 pump.cancel()
                 throw ProtocolFailure(code: .notFound, message: "That session on your Mac has ended.")
             }

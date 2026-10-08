@@ -14,9 +14,15 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "2.4"
+    public static let current = "2.5"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "2.5", items: [
+            "Live agents only launch as bare allowlisted names — paths like ./claude in a share are rejected.",
+            "The Mac re-checks the agent allowlist before opening a PTY and runs a sanitized command line.",
+            "mkdir inside a share no longer follows outbound symlinks to create folders outside the share.",
+            "Each live terminal is bound to the iPhone that opened it; another paired phone cannot type, resize, resume, or close it.",
+        ]),
         ReleaseNotes(version: "2.4", items: [
             "Terminal slots: open up to three windows inside Terminal and switch without losing progress.",
             "Each slot can be a virtual shell, a live coding agent, the system Monitor, or a pinned fetch snapshot.",

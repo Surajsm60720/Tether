@@ -272,6 +272,7 @@ final class ClientStore {
                 mode: .session(hostId: dial.hostId, key: SymmetricKey(data: keyData))
             )
             await attach(session)
+            let previousHost = hostId
             hostId = dial.hostId
             hostName = await session.hostName
             connected = true
@@ -283,10 +284,7 @@ final class ClientStore {
                 touch(saved.id)
             }
             shares = try await session.shares()
-            if !hasLiveAgent {
-                path = "/"
-                resetTerminalSlots()
-            }
+            adoptConnectedHost(dial.hostId, previousHost: previousHost, resettingPath: true)
             try await refresh()
             await resumeAgentsIfNeeded(host: dial.hostId)
         } catch {
@@ -406,6 +404,7 @@ final class ClientStore {
                 mode: .session(hostId: item.id, key: SymmetricKey(data: keyData))
             )
             await attach(session)
+            let previousHost = hostId
             hostId = item.id
             hostName = await session.hostName
             connected = true
@@ -415,12 +414,7 @@ final class ClientStore {
             intentionalDisconnect = false
             touch(item.id)
             shares = try await session.shares()
-            if !restoring {
-                path = "/"
-                if !hasLiveAgent {
-                    resetTerminalSlots()
-                }
-            }
+            adoptConnectedHost(item.id, previousHost: previousHost, resettingPath: !restoring)
             try await refresh()
             await syncPreventSleepPreference()
             await resumeAgentsIfNeeded(host: item.id)
@@ -464,11 +458,11 @@ final class ClientStore {
             }
             savePaired(id: id, name: name)
             await attach(session)
+            let previousHost = hostId
             hostId = id
             hostName = name
             connected = true
-            path = "/"
-            resetTerminalSlots()
+            adoptConnectedHost(id, previousHost: previousHost, resettingPath: true)
             pairPhase = .success(name)
             shares = try await session.shares()
             try await refresh()
@@ -1497,16 +1491,28 @@ final class ClientStore {
         #endif
     }
 
+    /// Drop terminals that belong to another Mac when the connected host changes.
+    private func adoptConnectedHost(_ id: String, previousHost: String, resettingPath: Bool) {
+        if !previousHost.isEmpty, previousHost != id {
+            clearAllAgents(keepSlots: false)
+        }
+        if resettingPath {
+            path = "/"
+            if !hasLiveAgent {
+                resetTerminalSlots()
+            }
+        }
+    }
+
     private func rememberAgents() {
+        // Persist session ids and program names only — never the full launch line (flags / tokens).
         let payloads: [[String: String]] = terminalSlots.compactMap { slot in
             guard slot.kind == .agent,
                   let id = slot.agentSessionID,
-                  let program = slot.agentProgram,
-                  let line = slot.agentLine else { return nil }
+                  let program = slot.agentProgram else { return nil }
             return [
                 "id": id,
                 "program": program,
-                "line": line,
                 "cwd": slot.cwd,
                 "host": slot.agentHostID ?? hostId,
                 "slot": slot.id,
@@ -1533,12 +1539,13 @@ final class ClientStore {
         }
         var restored: [TerminalSlotState] = []
         for payload in payloads.prefix(TerminalSlotBook.maxAgents) {
-            guard let id = payload["id"], let program = payload["program"], let line = payload["line"],
+            guard let id = payload["id"], let program = payload["program"],
                   let host = payload["host"] else { continue }
             let slot = TerminalSlotState(id: payload["slot"] ?? UUID().uuidString, kind: .agent, cwd: payload["cwd"] ?? "/")
             slot.agentSessionID = id
             slot.agentProgram = program
-            slot.agentLine = line
+            // Resume uses the session id; keep a bare program name for UI only.
+            slot.agentLine = payload["line"].flatMap { AgentPrograms.programName(in: $0) } ?? program
             slot.agentHostID = host
             slot.agentPaused = true
             slot.agentReceived = true

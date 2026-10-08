@@ -162,16 +162,10 @@ public enum AgentScreenHint: Sendable {
         cues.contains { line.contains($0) }
     }
 
+    /// Never surface raw PTY text on the Island / Lock Screen — fixed labels only.
     private static func snippet(_ line: String, limit: Int = 28) -> String? {
-        var s = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !s.isEmpty else { return nil }
-        if s.contains("/users/") || s.contains("/home/") || s.contains("~/") {
-            return nil
-        }
-        if s.count > limit {
-            let end = s.index(s.startIndex, offsetBy: limit - 1)
-            s = String(s[..<end]) + "…"
-        }
-        return s
+        _ = line
+        _ = limit
+        return nil
     }
 }
