@@ -389,6 +389,7 @@ Typing `claude`, `cursor`, `agent`, `codex`, or another name in `AgentPrograms` 
 - Closing the session from the phone (the Terminal close control) sends SIGHUP. Switching to Files or Transfers (header folder control, or the tab bar once you leave Terminal), switching to another terminal slot, or switching apps, does not: the process keeps running on the Mac. While a live agent slot is focused on the Terminal tab the root tab bar is hidden; it returns when you leave Terminal or focus a non-agent slot, with a Live badge on Terminal while any agent is still running, and the phone rejoins that agent’s screen when you return to its slot.
 - Up to three concurrent live agents per connection (aligned with the slot cap). Session IDs on `term.*` demux bytes to the matching slot. The Dynamic Island still shows one agent chip: the focused agent, or else the agent with highest urgency (`Needs you` first).
 - Live agents launch only as bare allowlisted names (no `./claude` or absolute paths). The Host re-validates and runs a sanitized `exec` line. Each session is owned by the pairing `deviceId` that opened it; other paired phones cannot input, resume, resize, or close it (v2.5).
+- Connecting to a different Mac clears Terminal slots from the previous host. Resume persistence stores session id and program name only. Live Activity agent details use fixed status words — never scraped PTY snippets (v2.6).
 - Terminal bytes are never logged.
 
 ---

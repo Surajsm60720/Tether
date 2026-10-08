@@ -14,9 +14,15 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "2.5"
+    public static let current = "2.6"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "2.6", items: [
+            "Switching Macs clears terminal slots that belonged to the previous host so paused agents cannot linger.",
+            "Saved agent resume data stores the session id and program name only — not the full launch line.",
+            "Dynamic Island agent details use fixed status words only; PTY line snippets are no longer shown.",
+            "The Mac admits live agents under a lock so concurrent opens cannot exceed the three-session cap.",
+        ]),
         ReleaseNotes(version: "2.5", items: [
             "Live agents only launch as bare allowlisted names — paths like ./claude in a share are rejected.",
             "The Mac re-checks the agent allowlist before opening a PTY and runs a sanitized command line.",

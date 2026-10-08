@@ -1,6 +1,6 @@
 # Tether
 
-Version 2.5.
+Version 2.6.
 
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
@@ -243,6 +243,15 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 ## Changelog
 
 The same notes are in Settings → What's new on both the Mac and the iPhone.
+
+### 2.6
+
+Session isolation and Island privacy after 2.5.
+
+- Switching Macs clears terminal slots from the previous host.
+- Agent resume data no longer stores the full launch line.
+- Dynamic Island agent details are fixed status words only (no PTY snippets).
+- Concurrent agent opens cannot exceed the three-session cap.
 
 ### 2.5
 
