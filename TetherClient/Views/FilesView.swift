@@ -29,14 +29,17 @@ struct SessionView: View {
             }
             TabView(selection: $store.sessionTab) {
                 FilesView(store: store)
-                    .tag(0)
+                    .tag(SessionTabIndex.files)
                     .tabItem { Label(L10n.files, systemImage: "folder.fill") }
+                SendView(store: store)
+                    .tag(SessionTabIndex.send)
+                    .tabItem { Label(L10n.send, systemImage: "tray.and.arrow.up.fill") }
                 TerminalScreen(store: store)
-                    .tag(1)
+                    .tag(SessionTabIndex.terminal)
                     .tabItem { Label(L10n.terminal, systemImage: "terminal") }
                     .badge(store.hasLiveAgent ? "Live" : nil)
                 TransfersView(store: store)
-                    .tag(2)
+                    .tag(SessionTabIndex.transfers)
                     .tabItem { Label(L10n.transfers, systemImage: "arrow.up.arrow.down.circle") }
             }
         }

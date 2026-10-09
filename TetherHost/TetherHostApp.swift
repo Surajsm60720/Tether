@@ -145,6 +145,14 @@ struct TetherHostApp: App {
         .windowResizability(.contentSize)
         .defaultSize(width: 420, height: 280)
 
+        Window("Shelf", id: "shelf") {
+            ShelfView(store: store)
+                .tint(Color.tether.accent)
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 520, height: 140)
+        .windowStyle(.hiddenTitleBar)
+
         Settings {
             SettingsView(store: store)
                 .tint(Color.tether.accent)

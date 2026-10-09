@@ -85,7 +85,7 @@ This capability category already exists (SMB in the Files app, SFTP clients, SSH
 Key scenarios:
 - S1. First run: install the Mac app, choose a folder to share, scan the QR code on the iPhone, browse files.
 - S2. Everyday: open the iOS app, tap the Mac, browse, tap a PDF to preview.
-- S3. Upload: pick photos on the iPhone and send them to the Mac's "Received" folder.
+- S3. Send: pick photos or files on the iPhone (Send tab or Share Extension) and deliver them to the Mac's Inbox; the Mac shows a Shelf for drag-out and an Inbox list for Open / Reveal / Move.
 - S4. Power user: run `ls`, `cd`, `cat`, `get`, `open` in the terminal tab.
 - S5. Security: the user revokes a phone from the Mac app, and the phone can no longer connect.
 
@@ -99,8 +99,9 @@ Key scenarios:
 | **M1** | Polished GUI (grid and list, breadcrumbs, thumbnails, sort), uploads, transfers sheet with progress |
 | **M2** | Virtual terminal |
 | **M3** | Settings, device management and revoke, error states, demo mode, polish |
-| **Stretch** | Streaming video through `AVAssetResourceLoader`, iOS Share Extension ("Send to Mac"), Save to Photos, rename/delete/mkdir with confirmations |
-| **Later** | Windows host, Android client (the wire protocol is documented so it is portable) |
+| **3.0** | Phone → Mac Send: reserved Inbox share, iOS Send tab, Share Extension, Mac Inbox page + floating Shelf for drag-out. Send-only (no Mac browsing of iPhone storage). |
+| **Stretch** | Streaming video through `AVAssetResourceLoader`, Save to Photos, rename/delete/mkdir with confirmations |
+| **Later** | Windows host, Android client (the wire protocol is documented so it is portable); curated "On this iPhone" reverse browse |
 
 ---
 
@@ -486,8 +487,16 @@ Time estimates assume focused work. M0 is sized for the meetup.
 ### M3 — Hardening (days 11–14)
 - Settings, device revoke, error and offline states, reconnect logic, demo mode, accessibility pass, app icon, README with screenshots.
 
+### 3.0 — Phone → Mac Send
+- Reserved **Inbox** share (always writable) backed by a configurable Mac folder (security-scoped bookmark).
+- iOS **Send** tab targets Inbox; folder-browser upload into writable shares remains for power users.
+- iOS Share Extension ("Send to Mac") with App Group handoff when the app must finish the transfer.
+- Mac **Inbox** sidebar page (Open / Reveal / Move / Delete) and floating **Shelf** for drag-out into other apps.
+- Receive attention: Shelf auto-open (setting), menu-bar badge, optional sound.
+- **Acceptance:** S3 works end to end; Inbox path change applies to the next send; Shelf drag-out works; Share Extension hands off cleanly.
+
 ### Stretch
-Streaming video, Share Extension, rename/delete/mkdir, Save to Photos.
+Streaming video, Save to Photos, rename/delete/mkdir.
 
 ---
 
@@ -510,8 +519,9 @@ Streaming video, Share Extension, rename/delete/mkdir, Save to Photos.
 1. App name: **Tether** (placeholder).
 2. Show hidden files by default: **No.**
 3. Terminal allowed to run on shares marked read-only: **Yes** (read commands only).
-4. Mac "Received" folder: **user chooses a writable share; none by default.**
+4. Mac Inbox folder: **dedicated configurable directory** (suggested `~/Documents/Tether Received`), exposed as a reserved always-writable `Inbox` share. Not "any writable share."
 5. Open source license if published: **MIT.**
+6. Mac browsing iPhone storage: **out of scope for 3.0** (send-only).
 
 ---
 

@@ -352,6 +352,60 @@ import Testing
     #expect(!leftovers.contains(where: { $0.hasPrefix(".tether-upload-") }))
 }
 
+@Test func inboxShareHelpers() throws {
+    #expect(InboxShare.name == "Inbox")
+    #expect(InboxShare.isReservedShareName("inbox"))
+    #expect(InboxShare.isReservedShareName("Inbox"))
+    #expect(!InboxShare.isReservedShareName("Documents"))
+    let path = try InboxShare.path(fileName: "photo.jpg")
+    #expect(path.string == "/Inbox/photo.jpg")
+    #expect(InboxShare.isInbox(path))
+    #expect(!InboxShare.isInbox(try VirtualPath.parse("/Docs/a.txt")))
+}
+
+@Test func diskInboxUploadAndConflictRename() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("tether-inbox-\(UUID().uuidString)", isDirectory: true)
+    let inbox = root.appendingPathComponent("Tether Received", isDirectory: true)
+    let outside = root.appendingPathComponent("secret.txt")
+    try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+    try Data("secret".utf8).write(to: outside)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let provider = DiskFileProvider(shares: [
+        MountedShare(name: InboxShare.name, root: inbox, writable: true),
+    ])
+    // Inbox is mounted for uploads but hidden from browse / shares listing.
+    let shares = await provider.shares()
+    #expect(shares.isEmpty)
+    let rootListing = try await provider.list(path: .root, offset: 0, limit: 20, includeHidden: false)
+    #expect(rootListing.isEmpty)
+    await #expect(throws: ProtocolFailure.self) {
+        _ = try await provider.list(path: try VirtualPath.parse("/Inbox"), offset: 0, limit: 20, includeHidden: false)
+    }
+
+    let payload = Data("hello inbox".utf8)
+    let id = try await provider.beginUpload(path: try InboxShare.path(fileName: "note.txt"), size: UInt64(payload.count), overwrite: false)
+    _ = try await provider.uploadChunk(id: id, offset: 0, data: payload)
+    let commit = try await provider.commitUpload(id: id)
+    #expect(commit.fileName == "note.txt")
+    #expect(commit.path.string == "/Inbox/note.txt")
+    #expect(try Data(contentsOf: inbox.appendingPathComponent("note.txt")) == payload)
+
+    let again = Data("second".utf8)
+    let id2 = try await provider.beginUpload(path: try InboxShare.path(fileName: "note.txt"), size: UInt64(again.count), overwrite: false)
+    _ = try await provider.uploadChunk(id: id2, offset: 0, data: again)
+    let commit2 = try await provider.commitUpload(id: id2)
+    #expect(commit2.fileName == "note (2).txt")
+    #expect(InboxShare.isInbox(commit2.path))
+    #expect(try Data(contentsOf: inbox.appendingPathComponent("note (2).txt")) == again)
+
+    #expect(throws: PathError.self) {
+        _ = try VirtualPath.parse("/Inbox/../secret.txt")
+    }
+    #expect(FileManager.default.fileExists(atPath: outside.path))
+    #expect(String(data: try Data(contentsOf: outside), encoding: .utf8) == "secret")
+}
+
 @Test func pairListReadWriteOverThePipe() async throws {
     let files = MemoryFileProvider()
     files.addShare(name: "Docs", writable: true)
@@ -440,6 +494,7 @@ final class TestHost: HostServing, @unchecked Sendable {
     func sessionApprovalRequired() -> Bool { false }
     func decide(_ request: ApprovalRequest) async -> Bool { true }
     func note(_ event: String) {}
+    func didReceiveUpload(path: VirtualPath, fileName: String, fromDevice deviceName: String) {}
     func connected(deviceId: String, name: String) {
         lock.lock()
         connectedNames.append(name)

@@ -15,7 +15,12 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
     }
 
     public func shares() async -> [ShareInfo] {
-        sync { mounts.map { ShareInfo(name: $0.name, writable: $0.writable) } }
+        // Inbox is send-only — mounted for uploads, not advertised for browsing.
+        sync {
+            mounts
+                .filter { !InboxShare.isReservedShareName($0.name) }
+                .map { ShareInfo(name: $0.name, writable: $0.writable) }
+        }
     }
 
     private func sync<T>(_ body: () throws -> T) rethrows -> T {
@@ -24,16 +29,22 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
         return try body()
     }
 
+    private func rejectInboxBrowse(_ path: VirtualPath) throws {
+        guard let first = path.components.first, InboxShare.isReservedShareName(first) else { return }
+        throw ProtocolFailure(code: .notFound, message: "That shared folder isn't here.")
+    }
+
     public func list(path: VirtualPath, offset: Int, limit: Int, includeHidden: Bool) async throws -> [FileEntry] {
         let budget = MeasureBudget()
         if path.isRoot {
-            let mounts = sync { self.mounts }
+            let mounts = sync { self.mounts.filter { !InboxShare.isReservedShareName($0.name) } }
             let entries = mounts.map { share in
                 directoryEntry(name: share.name, url: share.root, budget: budget, includeHidden: includeHidden)
             }
             let start = min(max(offset, 0), entries.count)
             return Array(entries[start..<min(start + ProviderSupport.clampLimit(limit), entries.count)])
         }
+        try rejectInboxBrowse(path)
         let located = try locate(path, leafMustExist: true)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: located.url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -68,7 +79,7 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
     public func stat(path: VirtualPath) async throws -> FileEntry {
         let budget = MeasureBudget()
         if path.isRoot {
-            let mounts = sync { self.mounts }
+            let mounts = sync { self.mounts.filter { !InboxShare.isReservedShareName($0.name) } }
             var size: UInt64 = 0
             var complete = true
             for share in mounts {
@@ -78,6 +89,7 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
             }
             return FileEntry(name: "/", kind: .dir, size: complete ? size : 0, mtime: Date().timeIntervalSince1970, childCount: mounts.count)
         }
+        try rejectInboxBrowse(path)
         let located = try locate(path, leafMustExist: true)
         guard let entry = entry(for: located.url, budget: budget, includeHidden: false) else {
             throw ProtocolFailure(code: .notFound, message: "That item isn't here.")
@@ -86,6 +98,7 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
     }
 
     public func read(path: VirtualPath, offset: UInt64, length: Int) async throws -> ReadChunk {
+        try rejectInboxBrowse(path)
         let located = try locate(path, leafMustExist: true)
         let handle = try FileHandle(forReadingFrom: located.url)
         defer { try? handle.close() }
@@ -108,10 +121,19 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
             throw ProtocolFailure(code: .readOnly, message: "This folder is read-only.")
         }
         let finalURL = uniqueDestination(directory: parent.url, name: name, overwrite: overwrite)
+        let finalName = finalURL.lastPathComponent
+        let virtualPath = path.parent.appending(finalName)
         let tempURL = parent.url.appendingPathComponent(".tether-upload-\(UUID().uuidString).partial")
         FileManager.default.createFile(atPath: tempURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: tempURL)
-        let upload = DiskUpload(handle: handle, tempURL: tempURL, finalURL: finalURL, expected: size, received: 0)
+        let upload = DiskUpload(
+            handle: handle,
+            tempURL: tempURL,
+            finalURL: finalURL,
+            virtualPath: virtualPath,
+            expected: size,
+            received: 0
+        )
         let id = UUID().uuidString
         sync { uploads[id] = upload }
         return id
@@ -129,7 +151,8 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
         return upload.received
     }
 
-    public func commitUpload(id: String) async throws {
+    @discardableResult
+    public func commitUpload(id: String) async throws -> UploadCommit {
         let upload = try takeUpload(id, remove: true)
         try upload.handle.close()
         guard upload.received == upload.expected else {
@@ -140,6 +163,7 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
             try FileManager.default.removeItem(at: upload.finalURL)
         }
         try FileManager.default.moveItem(at: upload.tempURL, to: upload.finalURL)
+        return UploadCommit(path: upload.virtualPath, fileName: upload.finalURL.lastPathComponent)
     }
 
     public func abortUpload(id: String) async throws {
@@ -499,13 +523,22 @@ private final class DiskUpload: @unchecked Sendable {
     let handle: FileHandle
     let tempURL: URL
     let finalURL: URL
+    let virtualPath: VirtualPath
     let expected: UInt64
     var received: UInt64
 
-    init(handle: FileHandle, tempURL: URL, finalURL: URL, expected: UInt64, received: UInt64) {
+    init(
+        handle: FileHandle,
+        tempURL: URL,
+        finalURL: URL,
+        virtualPath: VirtualPath,
+        expected: UInt64,
+        received: UInt64
+    ) {
         self.handle = handle
         self.tempURL = tempURL
         self.finalURL = finalURL
+        self.virtualPath = virtualPath
         self.expected = expected
         self.received = received
     }

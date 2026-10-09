@@ -22,6 +22,14 @@ struct TetherClientApp: App {
             RootView(store: store)
                 .tint(Color.tether.accent)
                 .onOpenURL { store.openDeepLink($0) }
+                .task {
+                    await store.processPendingShareInbox()
+                }
+                .onChange(of: store.connected) { _, connected in
+                    if connected {
+                        Task { await store.processPendingShareInbox() }
+                    }
+                }
         }
     }
 }

@@ -34,6 +34,31 @@ struct ActivityEvent: Identifiable, Equatable {
     var text: String
 }
 
+struct InboxItem: Identifiable, Equatable, Hashable {
+    var id: UUID
+    var url: URL
+    var name: String
+    var size: UInt64
+    var modified: Date
+    var sender: String?
+    /// Folder where the file was saved (shown under each row).
+    var destination: String
+    var batchID: UUID
+}
+
+/// Only files actually received from a phone — never a directory listing of the Inbox folder.
+private struct InboxReceipt: Codable, Equatable, Identifiable {
+    var id: UUID
+    var fileName: String
+    var path: String
+    var size: UInt64
+    var receivedAt: TimeInterval
+    var sender: String
+    var batchID: UUID?
+
+    var date: Date { Date(timeIntervalSince1970: receivedAt) }
+}
+
 enum FriendlyName {
     private static let choices = [
         "Amber Desk", "Cedar Studio", "Willow Nook", "Harbor Loft", "Maple Study",
@@ -52,6 +77,7 @@ enum RuntimeEvent: Sendable {
     case approval(String)
     case activityChanged
     case preventSleepChanged(Bool)
+    case inboxReceived(fileName: String, path: String, deviceName: String)
 }
 
 @MainActor
@@ -77,6 +103,19 @@ final class HostStore {
     var relayAddress: String
     var relayStatus = ""
     var machineAddresses: [MachineAddress] = []
+    var inboxURL: URL?
+    var inboxItems: [InboxItem] = []
+    var inboxUnseenCount = 0
+    var openShelfOnReceive: Bool
+    var playSoundOnReceive: Bool
+    /// Bumped when the Shelf should open (menu bar, auto-receive, or toolbar).
+    var shelfPresentationToken = 0
+    /// Files from the current receive batch only (not full Inbox history).
+    var shelfItems: [InboxItem] = []
+    private var inboxReceipts: [InboxReceipt] = []
+    /// Active Shelf batch for this Mac session; nil until the first receive after launch.
+    private var activeShelfBatchID: UUID?
+    private var lastShelfReceiveAt: Date?
 
     private let context: ModelContext
     private let runtime: HostRuntime
@@ -86,6 +125,7 @@ final class HostStore {
     private var relayTask: Task<Void, Never>?
     private var relayStream: NWByteStream?
     private var relayGeneration = 0
+    private var inboxAccessing = false
 
     init(context: ModelContext) {
         self.context = context
@@ -99,7 +139,10 @@ final class HostStore {
         remoteEnabled = defaults.bool(forKey: "remoteEnabled")
         reachableAddress = defaults.string(forKey: "reachableAddress") ?? ""
         relayAddress = defaults.string(forKey: "relayAddress") ?? ""
+        openShelfOnReceive = defaults.object(forKey: "openShelfOnReceive") as? Bool ?? true
+        playSoundOnReceive = defaults.bool(forKey: "playSoundOnReceive")
         machineAddresses = MachineAddresses.list()
+        inboxReceipts = HostStore.loadReceipts(defaults: defaults)
         let runtime = HostRuntime(hostId: HostStore.loadHostID(), macName: name)
         self.runtime = runtime
         runtime.restoreKey = { deviceId in
@@ -112,6 +155,7 @@ final class HostStore {
         }
         HostStore.shared = self
         reload()
+        rebuildInboxItems()
         runtime.setRequireApproval(requireApproval)
         runtime.setPreventSleepWhileActive(preventSleepWhileActive)
         if sharingEnabled {
@@ -234,8 +278,10 @@ final class HostStore {
 
     var statusText: String {
         if !sharingEnabled { return L10n.sharingPaused }
-        if shares.isEmpty { return L10n.notSharing }
-        return L10n.status(folders: shares.count, devices: connected.count)
+        if shares.isEmpty && inboxURL == nil { return L10n.notSharing }
+        let folderCount = shares.count + (inboxURL == nil ? 0 : 1)
+        if folderCount == 0 { return L10n.notSharing }
+        return L10n.status(folders: folderCount, devices: connected.count)
     }
 
     var statusLabel: String { "Tether, \(statusText)" }
@@ -362,8 +408,11 @@ final class HostStore {
         do {
             let data = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
             var name = url.lastPathComponent
+            if InboxShare.isReservedShareName(name) {
+                name = "\(url.lastPathComponent) folder"
+            }
             var suffix = 2
-            while shares.contains(where: { $0.name == name }) {
+            while shares.contains(where: { $0.name == name }) || InboxShare.isReservedShareName(name) {
                 name = "\(url.lastPathComponent) \(suffix)"
                 suffix += 1
             }
@@ -375,6 +424,106 @@ final class HostStore {
         } catch {
             note("Couldn't share that folder.")
         }
+    }
+
+    func setOpenShelfOnReceive(_ enabled: Bool) {
+        openShelfOnReceive = enabled
+        UserDefaults.standard.set(enabled, forKey: "openShelfOnReceive")
+    }
+
+    func setPlaySoundOnReceive(_ enabled: Bool) {
+        playSoundOnReceive = enabled
+        UserDefaults.standard.set(enabled, forKey: "playSoundOnReceive")
+    }
+
+    func presentShelf() {
+        shelfPresentationToken += 1
+    }
+
+    func chooseInboxFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use Inbox"
+        panel.message = "Choose where files sent from your iPhone are stored."
+        if let inboxURL { panel.directoryURL = inboxURL }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        setInboxFolder(url)
+    }
+
+    func setInboxFolder(_ url: URL) {
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            let data = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(data, forKey: Self.inboxBookmarkKey)
+            reload()
+            note("Inbox folder updated.")
+        } catch {
+            note("Couldn't set the Inbox folder.")
+        }
+    }
+
+    func markInboxSeen() {
+        inboxUnseenCount = 0
+    }
+
+    func refreshInbox() {
+        rebuildInboxItems()
+    }
+
+    func openInboxItem(_ item: InboxItem) {
+        NSWorkspace.shared.open(item.url)
+    }
+
+    func revealInboxItem(_ item: InboxItem) {
+        NSWorkspace.shared.activateFileViewerSelecting([item.url])
+    }
+
+    /// Removes a row from Inbox / Shelf history only — the file stays on disk.
+    func deleteInboxItem(_ item: InboxItem) {
+        inboxReceipts.removeAll { $0.id == item.id }
+        persistReceipts()
+        rebuildInboxItems()
+    }
+
+    /// Clears Inbox / Shelf history in the app only — files stay in the destination folder.
+    func clearInbox() {
+        inboxReceipts = []
+        persistReceipts()
+        inboxUnseenCount = 0
+        activeShelfBatchID = nil
+        lastShelfReceiveAt = nil
+        rebuildInboxItems()
+    }
+
+    func moveInboxItem(_ item: InboxItem) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Move"
+        panel.message = "Choose a folder for \(item.name)."
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        let destination = directory.appendingPathComponent(item.name)
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.moveItem(at: item.url, to: destination)
+            if let index = inboxReceipts.firstIndex(where: { $0.id == item.id }) {
+                inboxReceipts[index].path = destination.path
+                inboxReceipts[index].fileName = destination.lastPathComponent
+                persistReceipts()
+            }
+            rebuildInboxItems()
+        } catch {
+            note("Couldn't move \(item.name).")
+        }
+    }
+
+    var inboxPathDisplay: String {
+        inboxURL?.path ?? "Not set"
     }
 
     func setWritable(_ share: ShareItem, _ writable: Bool) {
@@ -403,6 +552,7 @@ final class HostStore {
     func rename(_ share: ShareItem, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.contains("/") else { return }
+        guard !InboxShare.isReservedShareName(trimmed) else { return }
         let records = (try? context.fetch(FetchDescriptor<ShareRecord>())) ?? []
         guard let record = records.first(where: { $0.id == share.id }) else { return }
         record.displayName = trimmed
@@ -445,7 +595,19 @@ final class HostStore {
         let records = (try? context.fetch(FetchDescriptor<ShareRecord>())) ?? []
         var mounted: [ShareItem] = []
         var mounts: [MountedShare] = []
+        if let inbox = resolveInboxURL() {
+            if inboxAccessing {
+                inboxURL?.stopAccessingSecurityScopedResource()
+                inboxAccessing = false
+            }
+            inboxAccessing = inbox.startAccessingSecurityScopedResource()
+            inboxURL = inbox
+            mounts.append(MountedShare(name: InboxShare.name, root: inbox, writable: true))
+        } else {
+            inboxURL = nil
+        }
         for record in records.sorted(by: { $0.createdAt < $1.createdAt }) {
+            if InboxShare.isReservedShareName(record.displayName) { continue }
             var stale = false
             guard let url = try? URL(
                 resolvingBookmarkData: record.bookmark,
@@ -463,6 +625,7 @@ final class HostStore {
         }
         shares = mounted
         runtime.setShares(mounts)
+        rebuildInboxItems()
 
         let saved = (try? context.fetch(FetchDescriptor<DeviceRecord>())) ?? []
         devices = saved.map { DeviceItem(id: $0.deviceId, name: $0.name, pairedAt: $0.pairedAt, lastSeenAt: $0.lastSeenAt) }
@@ -474,6 +637,125 @@ final class HostStore {
             }
         }
         runtime.setKeys(keys)
+    }
+
+    private static let inboxBookmarkKey = "inboxBookmark"
+
+    private func resolveInboxURL() -> URL? {
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: Self.inboxBookmarkKey) {
+            var stale = false
+            if let url = try? URL(
+                resolvingBookmarkData: data,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            ) {
+                if stale { staleMessage = "The Inbox folder needs to be chosen again." }
+                return url
+            }
+        }
+        return createDefaultInbox()
+    }
+
+    private func createDefaultInbox() -> URL? {
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let url = documents.appendingPathComponent(TetherCoreInfo.inboxDefaultFolderName, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            let data = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(data, forKey: Self.inboxBookmarkKey)
+            return url
+        } catch {
+            // Fall back to the path without a bookmark so local testing still works.
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
+    }
+
+    private static let inboxReceiptsKey = "inboxReceipts"
+
+    private static func loadReceipts(defaults: UserDefaults) -> [InboxReceipt] {
+        guard let data = defaults.data(forKey: inboxReceiptsKey) else { return [] }
+        return (try? JSONDecoder().decode([InboxReceipt].self, from: data)) ?? []
+    }
+
+    private func persistReceipts() {
+        if let data = try? JSONEncoder().encode(inboxReceipts) {
+            UserDefaults.standard.set(data, forKey: Self.inboxReceiptsKey)
+        }
+    }
+
+    private func recordReceipt(fileName: String, deviceName: String) {
+        guard let root = inboxURL else { return }
+        let url = root.appendingPathComponent(fileName)
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init) ?? 0
+        let now = Date()
+        // New Shelf batch when idle > 45s (or first receive this launch).
+        if activeShelfBatchID == nil
+            || lastShelfReceiveAt.map({ now.timeIntervalSince($0) > 45 }) == true {
+            activeShelfBatchID = UUID()
+        }
+        lastShelfReceiveAt = now
+        let batch = activeShelfBatchID ?? UUID()
+        activeShelfBatchID = batch
+        let receipt = InboxReceipt(
+            id: UUID(),
+            fileName: fileName,
+            path: url.path,
+            size: size,
+            receivedAt: now.timeIntervalSince1970,
+            sender: deviceName,
+            batchID: batch
+        )
+        inboxReceipts.insert(receipt, at: 0)
+        if inboxReceipts.count > 200 {
+            inboxReceipts = Array(inboxReceipts.prefix(200))
+        }
+        persistReceipts()
+        rebuildInboxItems()
+    }
+
+    /// Rebuilds UI lists from the receive ledger only — never scans the Inbox directory.
+    private func rebuildInboxItems() {
+        var kept: [InboxReceipt] = []
+        var items: [InboxItem] = []
+        for receipt in inboxReceipts {
+            let url = URL(fileURLWithPath: receipt.path)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            kept.append(receipt)
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init) ?? receipt.size
+            items.append(
+                InboxItem(
+                    id: receipt.id,
+                    url: url,
+                    name: receipt.fileName,
+                    size: size,
+                    modified: receipt.date,
+                    sender: receipt.sender.isEmpty ? nil : receipt.sender,
+                    destination: url.deletingLastPathComponent().path,
+                    batchID: receipt.batchID ?? receipt.id
+                )
+            )
+        }
+        if kept.count != inboxReceipts.count {
+            inboxReceipts = kept
+            persistReceipts()
+        }
+        inboxItems = items
+        if let batch = activeShelfBatchID {
+            shelfItems = items.filter { $0.batchID == batch }
+        } else {
+            shelfItems = []
+        }
+    }
+
+    func clearShelfBatch() {
+        activeShelfBatchID = nil
+        lastShelfReceiveAt = nil
+        shelfItems = []
     }
 
     private var listenerReady = false
@@ -658,6 +940,13 @@ final class HostStore {
             preventSleepWhileActive = value
             UserDefaults.standard.set(value, forKey: "preventSleepWhileActive")
             refreshSleep()
+        case let .inboxReceived(fileName, _, deviceName):
+            recordReceipt(fileName: fileName, deviceName: deviceName)
+            inboxUnseenCount += 1
+            note("Received \(fileName)\(deviceName.isEmpty ? "" : " from \(deviceName)")")
+            if openShelfOnReceive {
+                presentShelf()
+            }
         }
     }
 
@@ -778,6 +1067,10 @@ final class HostRuntime: HostServing, @unchecked Sendable {
     }
 
     func note(_ event: String) { onEvent?(.log(event)) }
+    func didReceiveUpload(path: VirtualPath, fileName: String, fromDevice deviceName: String) {
+        guard InboxShare.isInbox(path) else { return }
+        onEvent?(.inboxReceived(fileName: fileName, path: path.string, deviceName: deviceName))
+    }
     func connected(deviceId: String, name: String) { onEvent?(.connected(id: deviceId, name: name)) }
     @discardableResult
     func disconnected(deviceId: String, generation: UInt64) -> Bool {

@@ -61,6 +61,8 @@ struct TransferItem: Identifiable, Equatable {
     var name: String
     var path: String
     var direction: TransferDirection
+
+    var isUpload: Bool { direction == .up }
     var sent: UInt64 = 0
     var total: UInt64 = 0
     var state: TransferState = .active

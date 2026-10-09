@@ -106,16 +106,16 @@ struct AgentTerminalView: View {
         }
         .onChange(of: store.sessionTab) { _, tab in
             // Leaving Terminal drops the keyboard; returning does not force it open.
-            if tab != 1 { resignRequest += 1 }
+            if tab != SessionTabIndex.terminal { resignRequest += 1 }
         }
         .onChange(of: store.agentPaused) { wasPaused, paused in
             // After a remote reconnect, put the capture field back so typing / dictation works.
-            if wasPaused, !paused, store.sessionTab == 1, !store.agentExited {
+            if wasPaused, !paused, store.sessionTab == SessionTabIndex.terminal, !store.agentExited {
                 focusRequest += 1
             }
         }
         .onChange(of: store.reconnecting) { wasReconnecting, reconnecting in
-            if wasReconnecting, !reconnecting, store.sessionTab == 1,
+            if wasReconnecting, !reconnecting, store.sessionTab == SessionTabIndex.terminal,
                store.agentProgram != nil, !store.agentExited, !store.agentPaused {
                 focusRequest += 1
             }

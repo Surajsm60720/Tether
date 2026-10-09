@@ -283,7 +283,7 @@ import Testing
 }
 
 @Test func v1E2E_changelogListsEveryShippedVersion() throws {
-    #expect(AppChangelog.current == "2.6")
+    #expect(AppChangelog.current == "3.0")
     let versions = Set(AppChangelog.releases.map(\.version))
     #expect(versions.contains("1.0"))
     #expect(versions.contains("1.1"))
@@ -295,6 +295,7 @@ import Testing
     #expect(versions.contains("2.4"))
     #expect(versions.contains("2.5"))
     #expect(versions.contains("2.6"))
+    #expect(versions.contains("3.0"))
     let v1 = try #require(AppChangelog.releases.first { $0.version == "1.0" })
     #expect(v1.items.count >= 8)
     let v2 = try #require(AppChangelog.releases.first { $0.version == "2.0" })
@@ -311,6 +312,8 @@ import Testing
     #expect(v25.items.contains(where: { $0.localizedCaseInsensitiveContains("allowlist") || $0.localizedCaseInsensitiveContains("symlink") }))
     let v26 = try #require(AppChangelog.releases.first { $0.version == "2.6" })
     #expect(v26.items.contains(where: { $0.localizedCaseInsensitiveContains("Island") || $0.localizedCaseInsensitiveContains("slot") }))
+    let v30 = try #require(AppChangelog.releases.first { $0.version == "3.0" })
+    #expect(v30.items.contains(where: { $0.localizedCaseInsensitiveContains("Inbox") || $0.localizedCaseInsensitiveContains("Shelf") }))
 }
 
 @Test func v1E2E_terminalCommandSurfaceMatchesHelp() async {
@@ -377,6 +380,7 @@ private final class E2EHost: HostServing, @unchecked Sendable {
     func sessionApprovalRequired() -> Bool { false }
     func decide(_ request: ApprovalRequest) async -> Bool { true }
     func note(_ event: String) {}
+    func didReceiveUpload(path: VirtualPath, fileName: String, fromDevice deviceName: String) {}
     func connected(deviceId: String, name: String) {}
     func files() -> any FileProvider { filesProvider }
     func thumbnail(virtualPath: String, maxPixel: Int) async -> Data? { nil }

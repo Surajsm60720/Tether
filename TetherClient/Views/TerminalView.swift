@@ -42,20 +42,20 @@ struct TerminalScreen: View {
         // Live agent: hide the tab bar so the PTY and key row use the full bottom edge.
         .toolbar(store.focusedIsLiveAgent ? .hidden : .automatic, for: .tabBar)
         .onAppear {
-            if store.sessionTab == 1 { focused = store.focusedSlot?.kind == .virtual }
+            if store.sessionTab == SessionTabIndex.terminal { focused = store.focusedSlot?.kind == .virtual }
             store.syncMonitorPolling()
         }
         .onChange(of: store.focusedSlotID) { _, _ in
-            if store.sessionTab == 1 { focused = store.focusedSlot?.kind == .virtual }
+            if store.sessionTab == SessionTabIndex.terminal { focused = store.focusedSlot?.kind == .virtual }
             store.syncMonitorPolling()
         }
         .onChange(of: store.agentProgram) { _, program in
-            if program == nil, store.sessionTab == 1 { focused = store.focusedSlot?.kind == .virtual }
+            if program == nil, store.sessionTab == SessionTabIndex.terminal { focused = store.focusedSlot?.kind == .virtual }
         }
         .onChange(of: store.sessionTab) { _, tab in
             // Leaving Terminal must drop the keyboard so Files and Transfers get the full screen.
             // Slot sessions stay alive in ClientStore until closed.
-            if tab != 1 {
+            if tab != SessionTabIndex.terminal {
                 focused = false
             } else if store.focusedSlot?.kind == .virtual {
                 focused = true
@@ -274,7 +274,7 @@ struct TerminalScreen: View {
             if store.focusedSlot?.kind == .agent {
                 Button {
                     // Leave Terminal without ending the live session (tab bar returns).
-                    store.sessionTab = 0
+                    store.sessionTab = SessionTabIndex.files
                 } label: {
                     Image(systemName: "folder")
                         .foregroundStyle(TerminalTheme.standard.dim)

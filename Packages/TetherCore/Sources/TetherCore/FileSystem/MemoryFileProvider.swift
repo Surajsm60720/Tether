@@ -37,12 +37,15 @@ public final class MemoryFileProvider: FileProvider, @unchecked Sendable {
 
     public func shares() async -> [ShareInfo] {
         withState {
-            shares.keys.sorted().map { ShareInfo(name: $0, writable: shares[$0]?.writable ?? false) }
+            shares.keys.sorted()
+                .filter { !InboxShare.isReservedShareName($0) }
+                .map { ShareInfo(name: $0, writable: shares[$0]?.writable ?? false) }
         }
     }
 
     public func list(path: VirtualPath, offset: Int, limit: Int, includeHidden: Bool) async throws -> [FileEntry] {
         try withState {
+            try rejectInboxBrowse(path)
             let entries = try entries(at: path, includeHidden: includeHidden)
             let start = min(max(offset, 0), entries.count)
             let end = min(start + ProviderSupport.clampLimit(limit), entries.count)
@@ -53,14 +56,17 @@ public final class MemoryFileProvider: FileProvider, @unchecked Sendable {
     public func stat(path: VirtualPath) async throws -> FileEntry {
         try withState {
             if path.isRoot {
-                return FileEntry(name: "/", kind: .dir, size: 0, mtime: Date().timeIntervalSince1970, childCount: shares.count)
+                let count = shares.keys.filter { !InboxShare.isReservedShareName($0) }.count
+                return FileEntry(name: "/", kind: .dir, size: 0, mtime: Date().timeIntervalSince1970, childCount: count)
             }
+            try rejectInboxBrowse(path)
             return try node(at: path).entry(named: path.components.last ?? "/")
         }
     }
 
     public func read(path: VirtualPath, offset: UInt64, length: Int) async throws -> ReadChunk {
         try withState {
+            try rejectInboxBrowse(path)
             guard case let .file(data, _) = try node(at: path) else {
                 throw ProtocolFailure(code: .badRequest, message: "That item is a folder.")
             }
@@ -110,7 +116,8 @@ public final class MemoryFileProvider: FileProvider, @unchecked Sendable {
         }
     }
 
-    public func commitUpload(id: String) async throws {
+    @discardableResult
+    public func commitUpload(id: String) async throws -> UploadCommit {
         try withState {
             guard let upload = uploads.removeValue(forKey: id) else {
                 throw ProtocolFailure(code: .notFound, message: "That upload is no longer active.")
@@ -128,6 +135,7 @@ public final class MemoryFileProvider: FileProvider, @unchecked Sendable {
             }
             try share.root.insert(components: Array(path.components.dropFirst()), data: upload.data, modified: Date())
             shares[shareName] = share
+            return UploadCommit(path: path, fileName: path.components.last ?? path.string)
         }
     }
 
@@ -145,9 +153,14 @@ public final class MemoryFileProvider: FileProvider, @unchecked Sendable {
         }
     }
 
+    private func rejectInboxBrowse(_ path: VirtualPath) throws {
+        guard let first = path.components.first, InboxShare.isReservedShareName(first) else { return }
+        throw ProtocolFailure(code: .notFound, message: "That shared folder isn't here.")
+    }
+
     private func entries(at path: VirtualPath, includeHidden: Bool) throws -> [FileEntry] {
         if path.isRoot {
-            return shares.keys.sorted().map { name in
+            return shares.keys.sorted().filter { !InboxShare.isReservedShareName($0) }.map { name in
                 let node = shares[name]?.root
                 let count: Int
                 if case let .directory(children, _) = node {

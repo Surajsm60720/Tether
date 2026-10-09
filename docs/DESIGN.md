@@ -82,6 +82,7 @@ Rules:
   - Connected: `checkmark.circle.fill`; searching: `antenna.radiowaves.left.and.right`
   - Folder: `folder.fill`; file: `doc`; image: `photo`; video: `film`; audio: `waveform`; archive: `archivebox`
   - Terminal: `terminal`; transfers: `arrow.up.arrow.down.circle`
+  - Send / Inbox: `tray.and.arrow.up` / `tray.and.arrow.down`; Shelf: `shippingbox`
   - Pairing: `qrcode.viewfinder`; security: `lock.shield`
 
 ---
@@ -89,8 +90,15 @@ Rules:
 ## 6. iOS app
 
 ### 6.1 Navigation
-- Root: **Hosts** screen. After connecting to a Mac, show a `TabView` with **Files**, **Terminal**, **Transfers**. The navigation title in Files is the Mac's name with a menu to switch Mac or disconnect.
+- Root: **Hosts** screen. After connecting to a Mac, show a `TabView` with **Files**, **Send**, **Terminal**, **Transfers**. The navigation title in Files is the Mac's name with a menu to switch Mac or disconnect.
 - Use `NavigationStack` for folder drilling. The title shows the current folder; a long-press (or the title menu) shows ancestors for quick jumping.
+
+### 6.1a Send tab (v3.0)
+- Tab symbol: `tray.and.arrow.up.fill`. Title "Send".
+- Primary actions: **Photos** and **Files** pickers (multi-select). Each selection queues an upload into the Mac **Inbox** share (`/Inbox/…`), independent of the current Files browser path.
+- Empty state: symbol `tray.and.arrow.up`, headline "Send to this Mac", body "Photos and files land in the Inbox on your Mac. Drag them out from the Shelf or open Inbox in Tether on the Mac."
+- Active sends appear in the Transfers tab (same progress / cancel / retry).
+- Share Extension uses the same Inbox destination; if Tether must come to the foreground to finish, show a short "Open Tether to finish" handoff.
 
 ### 6.2 Hosts screen
 - Large title "Your Macs". Two sections: **Nearby** (discovered, not yet paired, with a "Pair" button) and **Paired** (with a status dot + word: "Connected", "Available", "Not found").
@@ -152,12 +160,13 @@ Glanceable surfaces only — calm, few words, monospaced digits for percents and
 ## 7. macOS app
 
 ### 7.1 Menu bar item
-- Template image symbol; states: idle (outline), device connected (filled with a small dot), sharing paused (slashed). Provide an accessibility label that states the status.
+- Template image symbol; states: idle (outline), device connected (filled with a small dot), sharing paused (slashed). Provide an accessibility label that states the status. When the Inbox has unseen items, show a small count badge (or "N new" in the popover).
 - Popover window (style `.window`), width 320 pt, content in vertical sections:
   1. **Header:** app name, status line ("Sharing 2 folders · 1 device connected"), master switch.
   2. **Connected devices:** device name, connected duration, a small "Disconnect" button.
   3. **Shared folders:** list with folder icon, name, access badge ("Read only" / "Can upload"). "Add folder…" button.
-  4. **Footer:** "Pair new iPhone…", "Settings…", "Quit".
+  4. **Inbox / Shelf:** "Show Shelf", "Show Inbox", and an unseen-count line when relevant.
+  5. **Footer:** "Pair new iPhone…", "Settings…", "Quit".
 
 ### 7.2 Pairing window
 - Single-purpose window 420×520 pt, non-resizable, centered.
@@ -168,15 +177,25 @@ Glanceable surfaces only — calm, few words, monospaced digits for percents and
 Native `NSAlert` style: title "Allow *<device>* to access your shared folders?", body "It will be able to browse and download from: *<share names>*." Buttons: **Allow** (default), **Don't Allow**. For shares that allow upload, add: "It can also add files to: *<names>*."
 
 ### 7.4 Main window sidebar
-Primary pages: Status, Shared folders, iPhones, Other networks, Activity. A separate bottom sidebar row is a **Settings** `SettingsLink` (gear) that opens the full Settings window — the same scene as ⌘, and the menu bar popover — not a partial in-window copy.
+Primary pages: Status, Shared folders, **Inbox**, iPhones, Other networks, Activity. A separate bottom sidebar row is a **Settings** `SettingsLink` (gear) that opens the full Settings window — the same scene as ⌘, and the menu bar popover — not a partial in-window copy.
+
+### 7.4a Inbox page (v3.0)
+- List of files in the configured Inbox folder: thumbnail, name (middle truncation), size, sender device when known, received time.
+- Row actions: Open, Reveal in Finder, Move…, Copy, Delete. Toolbar: Clear all (with confirmation), Change Inbox folder….
+- Empty state: `tray`, "No files yet", "When you send from your iPhone, they show up here and on the Shelf."
+
+### 7.4b Shelf window (v3.0)
+- Floating utility panel (~420×120 pt, resizable horizontally), always-on-top optional via window level; closing it does not quit Tether.
+- Horizontal strip of recent Inbox items (thumbnail + short name). Each item is drag-out capable (file URL / `NSItemProvider`) into Finder, Mail, Slack, and other apps.
+- Footer: "Open Inbox" link; optional pin. Auto-show when a file arrives if Settings → "Open Shelf when a file arrives" is on (default on).
 
 ### 7.5 Settings window
-Standard Settings scene (⌘, / menu bar **Settings…** / sidebar Settings) with tabs: **General** (Mac name, launch at login, require approval each session, prevent sleep), **Folders**, **Devices**, **Other networks**, **Activity**, **What's new**.
+Standard Settings scene (⌘, / menu bar **Settings…** / sidebar Settings) with tabs: **General** (Mac name, launch at login, require approval each session, prevent sleep, **Inbox folder**, Open Shelf on receive, play sound on receive), **Folders**, **Devices**, **Other networks**, **Activity**, **What's new**.
 
 ### 7.6 Behavior polish
 - Accessible keyboard shortcuts: `⌘,` Settings, `⌘N` Pair new iPhone (when the popover is key), `⌘Q` Quit.
 - Respect Dark Mode and "Reduce transparency".
-- No Dock icon by default; no first-launch window except a short welcome that asks the user to pick a folder to share.
+- No Dock icon by default; no first-launch window except a short welcome that asks the user to pick a folder to share. First Send setup may also prompt for an Inbox folder if none is configured.
 
 ---
 

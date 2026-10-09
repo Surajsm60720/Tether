@@ -71,6 +71,14 @@ struct MenuBarRoot: View {
             }
 
             Divider()
+            if store.inboxUnseenCount > 0 {
+                Text("\(store.inboxUnseenCount) new")
+                    .font(TetherType.meta)
+                    .foregroundStyle(Color.tether.accentText)
+            }
+            Button(store.inboxUnseenCount > 0 ? "Show received" : "Show Shelf") {
+                store.presentShelf()
+            }
             Button("Open Tether") { showMainWindow() }
                 .keyboardShortcut("o")
             Button(L10n.pair) {
@@ -86,6 +94,9 @@ struct MenuBarRoot: View {
         .padding(16)
         .frame(width: 320, alignment: .leading)
         .tint(Color.tether.accent)
+        .onChange(of: store.shelfPresentationToken) { _, _ in
+            openWindow(id: "shelf")
+        }
     }
 
     private func showMainWindow() {

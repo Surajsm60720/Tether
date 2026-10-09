@@ -3,6 +3,7 @@ import SwiftUI
 enum HostPage: String, CaseIterable, Identifiable {
     case overview
     case folders
+    case inbox
     case phones
     case otherNetworks
     case activity
@@ -13,6 +14,7 @@ enum HostPage: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "Status"
         case .folders: "Shared folders"
+        case .inbox: "Inbox"
         case .phones: "iPhones"
         case .otherNetworks: "Other networks"
         case .activity: "Activity"
@@ -23,6 +25,7 @@ enum HostPage: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "link"
         case .folders: "folder"
+        case .inbox: "tray.and.arrow.down"
         case .phones: "iphone"
         case .otherNetworks: "globe"
         case .activity: "list.bullet"
@@ -34,6 +37,7 @@ struct HostWindow: View {
     @Bindable var store: HostStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openWindow) private var openWindow
     @State private var page: HostPage? = .overview
     @State private var showPairing = false
     @State private var pendingRevoke: DeviceItem?
@@ -45,9 +49,22 @@ struct HostWindow: View {
             List(selection: $page) {
                 Section {
                     ForEach(HostPage.allCases) { item in
-                        Label(item.title, systemImage: item.symbol)
-                            .symbolRenderingMode(.hierarchical)
-                            .tag(item)
+                        Label {
+                            HStack {
+                                Text(item.title)
+                                if item == .inbox, store.inboxUnseenCount > 0 {
+                                    Text("\(store.inboxUnseenCount)")
+                                        .font(.caption2.monospacedDigit())
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Capsule().fill(Color.tether.accent.opacity(0.25)))
+                                }
+                            }
+                        } icon: {
+                            Image(systemName: item.symbol)
+                                .symbolRenderingMode(.hierarchical)
+                        }
+                        .tag(item)
                     }
                 }
                 Section {
@@ -85,6 +102,9 @@ struct HostWindow: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { store.refreshPhones(announce: false) }
         }
+        .onChange(of: store.shelfPresentationToken) { _, _ in
+            openWindow(id: "shelf")
+        }
         .sheet(isPresented: $showPairing) {
             PairingWindow(store: store)
         }
@@ -111,6 +131,8 @@ struct HostWindow: View {
             overview
         case .folders:
             folders
+        case .inbox:
+            InboxView(store: store)
         case .phones:
             phones
         case .otherNetworks:

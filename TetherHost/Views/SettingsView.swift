@@ -155,6 +155,23 @@ struct HostGeneralSettings: View {
                 ))
             }
             Section {
+                LabeledContent("Save received files to") {
+                    Text(store.inboxPathDisplay)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Change folder…") { store.chooseInboxFolder() }
+                Toggle("Show Shelf when a file arrives", isOn: Binding(
+                    get: { store.openShelfOnReceive },
+                    set: { store.setOpenShelfOnReceive($0) }
+                ))
+            } header: {
+                Text("Inbox")
+            } footer: {
+                Text("Only files sent from your iPhone are listed in Inbox and Shelf — not everything already in that folder.")
+            }
+            Section {
                 Picker("Icon", selection: Binding(
                     get: { AppIconChoice.current },
                     set: { $0.save() }

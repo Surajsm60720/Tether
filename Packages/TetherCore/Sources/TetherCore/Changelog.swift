@@ -14,9 +14,15 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "2.6"
+    public static let current = "3.0"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "3.0", items: [
+            "Send files from your iPhone to a Mac Inbox — photos, Files picker, or the Share sheet.",
+            "On the Mac, a floating Shelf lets you drag received files into Finder, Mail, Slack, and other apps.",
+            "Inbox in the Mac sidebar lists everything received: Open, Reveal, Move, or Delete.",
+            "Choose where Inbox files are stored; the reserved Inbox share is always writable for paired phones.",
+        ]),
         ReleaseNotes(version: "2.6", items: [
             "Switching Macs clears terminal slots that belonged to the previous host so paused agents cannot linger.",
             "Saved agent resume data stores the session id and program name only — not the full launch line.",

@@ -26,6 +26,7 @@ enum L10n {
         "\(name) runs on your Mac. Connect to it, then try again."
     }
     static var files: String { text("tab.files", "Files") }
+    static var send: String { text("tab.send", "Send") }
     static var terminal: String { text("tab.terminal", "Terminal") }
     static var transfers: String { text("tab.transfers", "Transfers") }
     static var settings: String { text("settings.title", "Settings") }

@@ -28,6 +28,8 @@ public protocol HostServing: Sendable {
     func sessionApprovalRequired() -> Bool
     func decide(_ request: ApprovalRequest) async -> Bool
     func note(_ event: String)
+    /// Called after a successful upload commit. Hosts use this for Inbox / Shelf UI.
+    func didReceiveUpload(path: VirtualPath, fileName: String, fromDevice deviceName: String)
     func connected(deviceId: String, name: String)
     func files() -> any FileProvider
     func thumbnail(virtualPath: String, maxPixel: Int) async -> Data?
@@ -358,8 +360,9 @@ private actor HostSession {
             try await send(WireMessage(kind: .response, header: header))
         case Op.writeCommit:
             guard let id = message.header.uploadId else { throw ProtocolFailure.malformed }
-            try await files.commitUpload(id: id)
-            server.note("Upload finished")
+            let commit = try await files.commitUpload(id: id)
+            server.note("Upload finished \(commit.path.string)")
+            server.didReceiveUpload(path: commit.path, fileName: commit.fileName, fromDevice: deviceName)
             try await send(WireMessage(kind: .response, header: header))
         case Op.writeAbort:
             if let id = message.header.uploadId {
@@ -690,8 +693,13 @@ public actor ClientConnection {
         overwrite: Bool = false,
         progress: @escaping @Sendable (UInt64, UInt64) -> Void
     ) async throws {
-        let values = try file.resourceValues(forKeys: [.fileSizeKey])
-        let size = UInt64(values.fileSize ?? 0)
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let size = try handle.seekToEnd()
+        try handle.seek(toOffset: 0)
+        guard size > 0 else {
+            throw ProtocolFailure(code: .badRequest, message: "That file is empty or couldn't be read.")
+        }
         let virtual = directory == "/" ? "/\(fileName)" : directory + "/" + fileName
         var begin = Header()
         begin.op = Op.writeBegin
@@ -702,8 +710,6 @@ public actor ClientConnection {
         guard let uploadId = started.header.uploadId else {
             throw ProtocolFailure(code: .internalError, message: "The Mac didn't accept the upload.")
         }
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
         var sent: UInt64 = 0
         var confirmed: UInt64 = 0
         var window: [(count: Int, task: Task<Void, Error>)] = []
@@ -730,10 +736,14 @@ public actor ClientConnection {
                 confirmed += UInt64(head.count)
                 progress(confirmed, size)
             }
+            guard confirmed == size else {
+                throw ProtocolFailure(code: .badRequest, message: "The upload ended early.")
+            }
             var commit = Header()
             commit.op = Op.writeCommit
             commit.uploadId = uploadId
             _ = try await roundTrip(commit, timeout: .seconds(30))
+            progress(size, size)
         } catch {
             var abort = Header()
             abort.op = Op.writeAbort

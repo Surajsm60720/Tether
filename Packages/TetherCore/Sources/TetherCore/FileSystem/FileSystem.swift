@@ -119,7 +119,8 @@ public protocol FileProvider: Sendable {
     func read(path: VirtualPath, offset: UInt64, length: Int) async throws -> ReadChunk
     func beginUpload(path: VirtualPath, size: UInt64, overwrite: Bool) async throws -> String
     func uploadChunk(id: String, offset: UInt64, data: Data) async throws -> UInt64
-    func commitUpload(id: String) async throws
+    @discardableResult
+    func commitUpload(id: String) async throws -> UploadCommit
     func abortUpload(id: String) async throws
     func abortAllUploads() async
     func makeDirectory(path: VirtualPath, createParents: Bool) async throws

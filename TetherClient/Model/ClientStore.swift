@@ -61,7 +61,8 @@ final class ClientStore {
     var fontSize: Double
     var cacheBytes: Int64 = 0
     var recents: [RecentRecord] = []
-    var sessionTab = 0
+    /// 0 Files, 1 Send, 2 Terminal, 3 Transfers — see `SessionTabIndex`.
+    var sessionTab = SessionTabIndex.files
     var connectingName: String?
     var phoneVisible = false
     var searchText = ""
@@ -503,15 +504,25 @@ final class ClientStore {
     func refresh() async throws {
         loading = entries.isEmpty
         defer { loading = false }
+        // Inbox is send-only — never browse it from Files.
+        if let virtual = try? VirtualPath.parse(path), InboxShare.isInbox(virtual) || virtual.components.first.map(InboxShare.isReservedShareName) == true {
+            path = "/"
+        }
         if let demoFiles {
             let virtual = try VirtualPath.parse(path)
             entries = try await demoFiles.list(path: virtual, offset: 0, limit: 1000, includeHidden: false)
             shares = await demoFiles.shares()
+            if path == "/" {
+                entries.removeAll { InboxShare.isReservedShareName($0.name) }
+            }
             offline = false
             return
         }
         guard let connection else { return }
         entries = try await connection.list(path: path)
+        if path == "/" {
+            entries.removeAll { InboxShare.isReservedShareName($0.name) }
+        }
         offline = false
     }
 
@@ -521,6 +532,7 @@ final class ClientStore {
             return
         }
         if entry.kind == .dir {
+            if InboxShare.isReservedShareName(entry.name) { return }
             path = path == "/" ? "/\(entry.name)" : path + "/" + entry.name
             entries = []
             selection.removeAll()
@@ -708,43 +720,119 @@ final class ClientStore {
         }
         let name = url.lastPathComponent
         let full = joined(name)
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init) ?? 0
-        let item = TransferItem(name: name, path: full, direction: .up, total: size)
+        await enqueueUpload(url: url, directory: path, fileName: name, fullPath: full)
+    }
+
+    /// Send into the Mac's reserved Inbox share, independent of the Files browser path.
+    func sendToInbox(url: URL) async {
+        guard connected || demoMode else {
+            statusMessage = "Connect to your Mac to send."
+            sessionTab = SessionTabIndex.send
+            return
+        }
+        let name = url.lastPathComponent
+        let directory = "/\(InboxShare.name)"
+        let full = "\(directory)/\(name)"
+        await enqueueUpload(url: url, directory: directory, fileName: name, fullPath: full)
+        sessionTab = SessionTabIndex.transfers
+    }
+
+    private func enqueueUpload(url: URL, directory: String, fileName: String, fullPath: String) async {
+        let sizeHint = Self.fileByteCount(at: url)
+        let item = TransferItem(name: fileName, path: fullPath, direction: .up, total: max(sizeHint, 1))
         transfers.insert(item, at: 0)
         publishTransferLiveActivity(force: true)
         let id = item.id
         transferTasks[id] = Task { @MainActor in
-            await self.performUpload(id: id, url: url, full: full, name: name, size: size)
+            await self.performUpload(id: id, source: url, directory: directory, name: fileName, sizeHint: sizeHint)
             self.transferTasks[id] = nil
         }
     }
 
-    private func performUpload(id: UUID, url: URL, full: String, name: String, size: UInt64) async {
+    private func performUpload(id: UUID, source: URL, directory: String, name: String, sizeHint: UInt64) async {
+        let full = directory == "/" ? "/\(name)" : "\(directory)/\(name)"
+        var localURL = source
+        var cleanup: URL?
         do {
+            // Copy under a security scope first so fileImporter / iCloud URLs stay readable
+            // for the whole transfer (the picker scope ends when sendToInbox returns).
+            let prepared = try Self.materializeUploadFile(from: source)
+            localURL = prepared.url
+            cleanup = prepared.cleanup
+            let size = max(Self.fileByteCount(at: localURL), sizeHint, 1)
+            updateTransfer(id, sent: 0, total: size, state: .active)
+
             if let demoFiles {
-                let data = try Data(contentsOf: url)
+                let data = try Data(contentsOf: localURL)
+                if directory == "/\(InboxShare.name)",
+                   await demoFiles.shares().contains(where: { $0.name == InboxShare.name }) == false {
+                    demoFiles.addShare(name: InboxShare.name, writable: true)
+                }
                 try demoFiles.writeFile(path: full, data: data)
                 updateTransfer(id, sent: UInt64(data.count), total: UInt64(data.count), state: .completed)
                 invalidateCompletionCache()
             } else if let connection {
-                try await connection.upload(file: url, toDirectory: path, fileName: name) { sent, total in
+                let clock = UploadProgressClock()
+                try await connection.upload(file: localURL, toDirectory: directory, fileName: name) { sent, total in
+                    guard clock.shouldPublish(sent: sent, total: total) else { return }
                     Task { @MainActor in
-                        self.updateTransfer(id, sent: sent, total: total, state: .active)
+                        self.updateTransfer(id, sent: sent, total: max(total, 1), state: .active)
                     }
                 }
-                updateTransfer(id, sent: size, total: max(size, 1), state: .completed)
+                updateTransfer(id, sent: size, total: size, state: .completed)
+            } else {
+                throw ProtocolFailure(code: .busy, message: "Not connected to a Mac.")
             }
             invalidateCompletionCache()
             try? await refresh()
         } catch is CancellationError {
-            updateTransfer(id, sent: 0, total: size, state: .failed, message: "Cancelled")
+            updateTransfer(id, sent: 0, total: max(sizeHint, 1), state: .failed, message: "Cancelled")
         } catch {
             if Task.isCancelled {
-                updateTransfer(id, sent: 0, total: size, state: .failed, message: "Cancelled")
+                updateTransfer(id, sent: 0, total: max(sizeHint, 1), state: .failed, message: "Cancelled")
             } else {
-                updateTransfer(id, sent: 0, total: size, state: .failed, message: (error as? ProtocolFailure)?.message)
+                updateTransfer(
+                    id,
+                    sent: 0,
+                    total: max(sizeHint, 1),
+                    state: .failed,
+                    message: (error as? ProtocolFailure)?.message ?? "Couldn't send that file."
+                )
             }
         }
+        if let cleanup {
+            try? FileManager.default.removeItem(at: cleanup)
+        }
+    }
+
+    private static func fileByteCount(at url: URL) -> UInt64 {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 0 {
+            return UInt64(size)
+        }
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let number = attrs[.size] as? NSNumber {
+            return number.uint64Value
+        }
+        if let handle = try? FileHandle(forReadingFrom: url) {
+            defer { try? handle.close() }
+            if let end = try? handle.seekToEnd() { return end }
+        }
+        return 0
+    }
+
+    /// Copies a picker/share URL into a temp file while the security scope is held.
+    private static func materializeUploadFile(from url: URL) throws -> (url: URL, cleanup: URL?) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tether-up-\(UUID().uuidString)-\(url.lastPathComponent)")
+        if FileManager.default.fileExists(atPath: temp.path) {
+            try FileManager.default.removeItem(at: temp)
+        }
+        try FileManager.default.copyItem(at: url, to: temp)
+        return (temp, temp)
     }
 
     func retry(_ item: TransferItem) async {
@@ -1081,7 +1169,7 @@ final class ClientStore {
     func noteAgentLayout(columns: Int, rows: Int) {
         guard let slot = focusedSlot, slot.kind == .agent, !slot.agentExited else { return }
         // Keep the last real size when another root tab or slot collapses the view.
-        if sessionTab != 1 { return }
+        if sessionTab != SessionTabIndex.terminal { return }
         let columns = min(200, max(2, columns))
         let rows = min(80, max(2, rows))
         if slot.agentSurface != nil, columns < 10 || rows < 3 { return }
@@ -1163,7 +1251,7 @@ final class ClientStore {
             return
         }
         if terminalSlots.count == 1, slot.kind == .virtual {
-            sessionTab = 0
+            sessionTab = SessionTabIndex.files
             return
         }
         removeSlot(id: slot.id)
@@ -1652,12 +1740,12 @@ final class ClientStore {
     }
 
     func syncMonitorPolling() {
-        let shouldPoll = sessionTab == 1 && focusedSlot?.kind == .monitor
+        let shouldPoll = sessionTab == SessionTabIndex.terminal && focusedSlot?.kind == .monitor
         if shouldPoll {
             guard monitorPollTask == nil else { return }
             monitorPollTask = Task { @MainActor in
                 while !Task.isCancelled {
-                    guard self.sessionTab == 1, self.focusedSlot?.kind == .monitor else { break }
+                    guard self.sessionTab == SessionTabIndex.terminal, self.focusedSlot?.kind == .monitor else { break }
                     await self.refreshMonitor()
                     try? await Task.sleep(for: .seconds(1.5))
                 }
@@ -1764,9 +1852,12 @@ final class ClientStore {
         guard url.scheme == TetherDeepLink.scheme else { return }
         switch url.host {
         case "transfers":
-            sessionTab = 2
+            sessionTab = SessionTabIndex.transfers
+        case "send":
+            sessionTab = SessionTabIndex.send
+            Task { await processPendingShareInbox() }
         case "terminal":
-            sessionTab = 1
+            sessionTab = SessionTabIndex.terminal
             if let target = TerminalSlotBook.islandAgent(
                 slots: terminalSlots.map(\.meta),
                 focused: focusedSlotID
@@ -1775,6 +1866,26 @@ final class ClientStore {
             }
         default:
             break
+        }
+    }
+
+    /// Drains files staged by the Share Extension into the Mac Inbox.
+    func processPendingShareInbox() async {
+        guard ShareInboxQueue.hasPending() else { return }
+        if !connected && !demoMode {
+            statusMessage = "Connect to your Mac to finish sending."
+            sessionTab = SessionTabIndex.send
+            return
+        }
+        let pending: [URL]
+        do {
+            pending = try ShareInboxQueue.drainPending()
+        } catch {
+            return
+        }
+        for url in pending {
+            await sendToInbox(url: url)
+            ShareInboxQueue.remove(url)
         }
     }
 
@@ -1839,6 +1950,7 @@ final class ClientStore {
 
     private func enableDemo() {
         let files = MemoryFileProvider()
+        files.addShare(name: InboxShare.name, writable: true)
         files.addShare(name: "Documents", writable: true)
         files.addShare(name: "Photos", writable: false)
         try? files.writeFile(path: "/Documents/Notes.txt", data: Data("Tether demo\nThis file lives only on this iPhone.\n".utf8))
@@ -2150,7 +2262,7 @@ final class ClientStore {
         case "clear":
             terminalLines = []
         case "exit":
-            sessionTab = 0
+            sessionTab = SessionTabIndex.files
         case "monitor":
             openMonitorSlot()
         case "fetch":
@@ -2327,6 +2439,25 @@ final class ClientStore {
 private extension ClientConnection {
     func setDisconnectHandler(_ handler: (@Sendable () -> Void)?) {
         onDisconnect = handler
+    }
+}
+
+/// Throttles upload progress UI updates off the transfer hot path.
+private final class UploadProgressClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = Date.distantPast
+
+    func shouldPublish(sent: UInt64, total: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if sent >= total {
+            last = Date()
+            return true
+        }
+        let now = Date()
+        guard now.timeIntervalSince(last) >= 0.12 else { return false }
+        last = now
+        return true
     }
 }
 

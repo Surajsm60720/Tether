@@ -436,6 +436,7 @@ private final class MultiAgentTestHost: HostServing, @unchecked Sendable {
     func sessionApprovalRequired() -> Bool { false }
     func decide(_ request: ApprovalRequest) async -> Bool { true }
     func note(_ event: String) {}
+    func didReceiveUpload(path: VirtualPath, fileName: String, fromDevice deviceName: String) {}
     func connected(deviceId: String, name: String) {}
     func files() -> any FileProvider { filesProvider }
     func thumbnail(virtualPath: String, maxPixel: Int) async -> Data? { nil }

@@ -1,8 +1,8 @@
 # Tether
 
-Version 2.6.
+Version 3.0.
 
-Tether lets an iPhone browse, preview, download, and upload files on a Mac, run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
+Tether lets an iPhone browse, preview, download, and upload files on a Mac, send files into a Mac Inbox (with a floating Shelf for drag-out), run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
 On the same Wi-Fi, the Mac advertises itself and the phone finds it. Away from that network, the phone can still connect if you save a reachable address (a public hostname, a forwarded port, or a Tailscale address) or if both devices dial out to a small relay you run. File contents and terminal commands stay encrypted with the pairing key. A relay only forwards bytes.
 
@@ -13,6 +13,7 @@ There is no account, no third-party networking library, and no third-party crypt
 - Share only the folders you pick. The rest of the Mac is not a filesystem the phone can walk.
 - Browse those folders on the iPhone in a list or a grid, sort them, search by name across every shared folder, and open a file in QuickLook (photos, video, audio, PDF, and the other types QuickLook supports).
 - Download files to the phone and upload files into a folder that you have marked writable.
+- Send photos and files from the iPhone **Send** tab (or the Share sheet) into the Mac **Inbox**. On the Mac, open the floating **Shelf** to drag received files into Finder, Mail, Slack, and other apps, or manage them from the Inbox page.
 - Watch transfer progress, retry, and cancel.
 - Use a terminal on the phone for everyday file commands (`ls`, `cd`, `cat`, `find`, and the rest listed below). Those commands stay inside the shared folders.
 - Type an allowlisted agent name (`claude`, `agent`, `codex`, `cursor`, and the rest) to open a live terminal session on the Mac. The phone is the screen and keyboard. The agent keeps running if you leave the app; reconnect resumes it. Live Activities and the Dynamic Island show transfer progress and live agent status (Thinking, Working, Editing, Needs you) while you use other apps.
@@ -35,6 +36,10 @@ Bundle identifiers:
 |---|---|
 | Mac host | `app.tether.host` |
 | iPhone client | `app.tether.client` |
+| Share extension | `app.tether.client.share` |
+| Widgets | `app.tether.client.widgets` |
+
+The client and Share extension use the App Group `group.app.tether.client` so shared items can hand off into Tether.
 
 ## Open the project
 
@@ -55,6 +60,7 @@ The menu bar menu shows whether sharing is on, which phones are connected, and s
 |---|---|
 | Status | Mac name, sharing switch, network line, connected phones, and a short list of shared folders |
 | Shared folders | Add, rename, remove, and choose whether each folder accepts uploads |
+| Inbox | Files sent from the iPhone; Open, Reveal, Move, Delete; open the Shelf |
 | iPhones | Paired phones, including ones nearby, and revoke |
 | Other networks | Listen for connections from outside this Wi-Fi, show addresses, set a relay, and copy the setup code |
 | Activity | A short log of pairing and connection events. Filter and clear it here |
@@ -63,6 +69,8 @@ The menu bar menu shows whether sharing is on, which phones are connected, and s
 Settings includes General, Folders, iPhones, Other networks, Activity, and **What's new**.
 
 Folders start read-only. Turn on **Allow uploads** for a folder before the phone can add files there. Uploads are still limited to that folder. Paths that try to escape it are rejected.
+
+The reserved **Inbox** share is always writable for paired phones. By default it uses `Documents/Tether Received` (change it in Settings → General). When a file arrives, the Shelf can open automatically so you can drag it into another app.
 
 **Pair new iPhone** opens a window with a QR code and a 16-character code grouped as `XXXX-XXXX-XXXX-XXXX`. Both expire after 120 seconds and work once. The Mac must approve the phone before pairing finishes. If you turn on **Require approval**, later sessions also wait for Allow on the Mac. Revoke a phone from the iPhones page or from Settings. Revoke deletes that phone’s key. The phone has to pair again.
 
@@ -77,7 +85,7 @@ The iPhone target must be signed with your Apple ID. A simulator build is alread
 5. Keep the Mac and iPhone on the same Wi-Fi for the first pair. A phone hotspot works when a guest network blocks device-to-device traffic. The Mac must be on that same hotspot.
 6. On the iPhone, tap **Continue** so Tether can look for the Mac, then tap **Allow** on the system Local Network prompt.
 7. Tap **Pair**, scan the QR code, or type the 16-character code. On the Mac, tap **Allow**.
-8. The phone opens the shared folders. Files, Terminal, and Transfers are the three tabs.
+8. The phone opens the shared folders. Files, Send, Terminal, and Transfers are the four tabs.
 
 iPhone Settings has the device name (what the Mac shows for this phone), the home-screen icon (Gold, Blue, Green, or Neutral; light, dark, and tinted follow the system), a cache size and clear button, terminal font size from 11 to 20 points, prevent Mac sleep while active (synced when connected), **Other networks** for the remote setup code, and **What's new** for this version.
 
@@ -87,7 +95,7 @@ Tap a paired Mac to connect. If it is on the same Wi-Fi, the row says **Availabl
 
 The file browser starts at `/`, which is the list of shared folders, not the Mac’s real disk root. Open a folder, tap a file to preview it, or select several files and download them. Large downloads ask before they start. Search filters the current folder by name. Sort by name, date, size, or kind. Switch between list and grid. Pull to refresh discovery from the Mac list.
 
-Downloads land in the app’s local files. Uploads use the system file picker and only succeed in a folder whose Mac-side switch allows uploads. The Transfers tab shows active and finished transfers, progress, and failures. Keep Tether in the foreground during a transfer. iOS can suspend the app, and a suspended app does not continue the copy. While a transfer or agent is active, a Live Activity can show progress or status on the Lock Screen and Dynamic Island; tap it to jump back into Tether. When an agent asks for approval or input, the Island expands with a **Needs you** alert.
+Downloads land in the app’s local files. The **Send** tab always targets the Mac Inbox (photos or Files). You can also share into Tether from other apps (“Send to Mac”); if Tether is not connected yet, open it and connect to finish. Folder-browser uploads still use the system file picker and only succeed in a folder whose Mac-side switch allows uploads. The Transfers tab shows active and finished transfers, progress, and failures. Keep Tether in the foreground during a transfer. iOS can suspend the app, and a suspended app does not continue the copy. While a transfer or agent is active, a Live Activity can show progress or status on the Lock Screen and Dynamic Island; tap it to jump back into Tether. When an agent asks for approval or input, the Island expands with a **Needs you** alert.
 
 The Terminal tab is a prompt of the form `mac-name:/Share/dir $`. History is the up and down keys. Tab completes commands and names in the current folder; a scrollable list above the prompt shows every match (tap to insert). Type `help` for a catalog with each command’s syntax and flags. Output wraps to the width of the monospaced font so a long line is not cut off at the edge of the screen. `exit` returns to Files. `clear` wipes the scrollback.
 
@@ -243,6 +251,15 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 ## Changelog
 
 The same notes are in Settings → What's new on both the Mac and the iPhone.
+
+### 3.0
+
+Phone → Mac Send with Inbox and Shelf.
+
+- Send files from the iPhone Send tab, or from the Share sheet (“Send to Mac”).
+- Mac Inbox page lists received files; Open, Reveal, Move, or Delete.
+- Floating Shelf for drag-out into Finder, Mail, Slack, and other apps.
+- Configurable Inbox folder; reserved Inbox share is always writable for paired phones.
 
 ### 2.6
 

@@ -11,6 +11,8 @@
 		E1A100000000000000000084 /* TetherCore in Frameworks */ = {isa = PBXBuildFile; productRef = E1A100000000000000000082 /* TetherCore */; };
 		E1A100000000000000000085 /* TetherWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E1A100000000000000000012 /* TetherWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E1A100000000000000000086 /* TetherCore in Frameworks */ = {isa = PBXBuildFile; productRef = E1A100000000000000000087 /* TetherCore */; };
+		E1A10000000000000000008A /* TetherCore in Frameworks */ = {isa = PBXBuildFile; productRef = E1A10000000000000000008B /* TetherCore */; };
+		E1A10000000000000000008C /* TetherShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E1A100000000000000000013 /* TetherShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -20,6 +22,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = E1A100000000000000000004;
 			remoteInfo = TetherWidgets;
+		};
+		E1A10000000000000000008D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E1A100000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E1A100000000000000000005;
+			remoteInfo = TetherShare;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -31,6 +40,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				E1A100000000000000000085 /* TetherWidgets.appex in Embed Foundation Extensions */,
+				E1A10000000000000000008C /* TetherShare.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -41,6 +51,7 @@
 		E1A100000000000000000010 /* TetherHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TetherHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E1A100000000000000000011 /* TetherClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TetherClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E1A100000000000000000012 /* TetherWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TetherWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		E1A100000000000000000013 /* TetherShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TetherShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -64,6 +75,13 @@
 				Info.plist,
 			);
 			target = E1A100000000000000000004 /* TetherWidgets */;
+		};
+		E1A100000000000000000049 /* Exceptions for "TetherShare" folder in "TetherShare" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E1A100000000000000000005 /* TetherShare */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -90,6 +108,14 @@
 				E1A100000000000000000046 /* Exceptions for "TetherWidgets" folder in "TetherWidgets" target */,
 			);
 			path = TetherWidgets;
+			sourceTree = "<group>";
+		};
+		E1A100000000000000000048 /* TetherShare */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E1A100000000000000000049 /* Exceptions for "TetherShare" folder in "TetherShare" target */,
+			);
+			path = TetherShare;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -119,6 +145,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E1A100000000000000000054 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1A10000000000000000008A /* TetherCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -138,6 +172,7 @@
 				E1A100000000000000000010 /* TetherHost.app */,
 				E1A100000000000000000011 /* TetherClient.app */,
 				E1A100000000000000000012 /* TetherWidgets.appex */,
+				E1A100000000000000000013 /* TetherShare.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -181,6 +216,7 @@
 			);
 			dependencies = (
 				E1A100000000000000000088 /* PBXTargetDependency */,
+				E1A10000000000000000008E /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				E1A100000000000000000042 /* TetherClient */,
@@ -216,6 +252,29 @@
 			productReference = E1A100000000000000000012 /* TetherWidgets.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		E1A100000000000000000005 /* TetherShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E1A100000000000000000094 /* Build configuration list for PBXNativeTarget "TetherShare" */;
+			buildPhases = (
+				E1A100000000000000000053 /* Sources */,
+				E1A100000000000000000054 /* Frameworks */,
+				E1A100000000000000000055 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E1A100000000000000000048 /* TetherShare */,
+			);
+			name = TetherShare;
+			packageProductDependencies = (
+				E1A10000000000000000008B /* TetherCore */,
+			);
+			productName = TetherShare;
+			productReference = E1A100000000000000000013 /* TetherShare.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -235,6 +294,11 @@
 						ProvisioningStyle = Automatic;
 					};
 					E1A100000000000000000004 = {
+						CreatedOnToolsVersion = 27.0;
+						DevelopmentTeam = DFNJK22KYY;
+						ProvisioningStyle = Automatic;
+					};
+					E1A100000000000000000005 = {
 						CreatedOnToolsVersion = 27.0;
 						DevelopmentTeam = DFNJK22KYY;
 						ProvisioningStyle = Automatic;
@@ -261,6 +325,7 @@
 				E1A100000000000000000002 /* TetherHost */,
 				E1A100000000000000000003 /* TetherClient */,
 				E1A100000000000000000004 /* TetherWidgets */,
+				E1A100000000000000000005 /* TetherShare */,
 			);
 		};
 /* End PBXProject section */
@@ -281,6 +346,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E1A100000000000000000052 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E1A100000000000000000055 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -311,6 +383,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E1A100000000000000000053 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -318,6 +397,11 @@
 			isa = PBXTargetDependency;
 			target = E1A100000000000000000004 /* TetherWidgets */;
 			targetProxy = E1A100000000000000000089 /* PBXContainerItemProxy */;
+		};
+		E1A10000000000000000008E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E1A100000000000000000005 /* TetherShare */;
+			targetProxy = E1A10000000000000000008D /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -390,7 +474,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.3;
+				MARKETING_VERSION = 3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.tether.host;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
@@ -423,7 +507,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.3;
+				MARKETING_VERSION = 3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.tether.host;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
@@ -446,13 +530,14 @@
 				DEVELOPMENT_TEAM = DFNJK22KYY;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				CODE_SIGN_ENTITLEMENTS = TetherClient/TetherClient.entitlements;
 				INFOPLIST_FILE = TetherClient/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3;
+				MARKETING_VERSION = 3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.tether.client;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -477,6 +562,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = DFNJK22KYY;
 				ENABLE_PREVIEWS = YES;
+				CODE_SIGN_ENTITLEMENTS = TetherClient/TetherClient.entitlements;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TetherClient/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -484,7 +570,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3;
+				MARKETING_VERSION = 3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.tether.client;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -512,7 +598,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.3;
+				MARKETING_VERSION = 3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.tether.client.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -540,8 +626,66 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.3;
+				MARKETING_VERSION = 3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.tether.client.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		E1A1000000000000000000E1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TetherShare/TetherShare.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = DFNJK22KYY;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TetherShare/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.tether.client.share;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E1A1000000000000000000E2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TetherShare/TetherShare.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = DFNJK22KYY;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TetherShare/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.tether.client.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
@@ -592,6 +736,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		E1A100000000000000000094 /* Build configuration list for PBXNativeTarget "TetherShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E1A1000000000000000000E1 /* Debug */,
+				E1A1000000000000000000E2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -613,6 +766,11 @@
 			productName = TetherCore;
 		};
 		E1A100000000000000000087 /* TetherCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E1A100000000000000000080 /* XCLocalSwiftPackageReference "Packages/TetherCore" */;
+			productName = TetherCore;
+		};
+		E1A10000000000000000008B /* TetherCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = E1A100000000000000000080 /* XCLocalSwiftPackageReference "Packages/TetherCore" */;
 			productName = TetherCore;
