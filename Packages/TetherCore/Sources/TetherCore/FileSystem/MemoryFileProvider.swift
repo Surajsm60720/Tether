@@ -135,7 +135,9 @@ public final class MemoryFileProvider: FileProvider, @unchecked Sendable {
             }
             try share.root.insert(components: Array(path.components.dropFirst()), data: upload.data, modified: Date())
             shares[shareName] = share
-            return UploadCommit(path: path, fileName: path.components.last ?? path.string)
+            let fileName = path.components.last ?? path.string
+            let hostAbsolutePath = "/tmp/TetherDemo" + path.string
+            return UploadCommit(path: path, fileName: fileName, hostAbsolutePath: hostAbsolutePath)
         }
     }
 

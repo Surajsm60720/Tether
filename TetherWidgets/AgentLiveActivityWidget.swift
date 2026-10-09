@@ -199,9 +199,11 @@ struct CLIThinkingGlyph: View {
         Group {
             switch style {
             case .cursor:
-                CursorCrystalShape()
-                    .fill(TetherLiveTheme.label, style: FillStyle(eoFill: true))
-                    .frame(width: size * 0.78, height: size * 0.78)
+                // DotmHex1 dual-head perimeter; tilted to sit like the Cursor crystal mark.
+                // Cell-snapped frames + opacity transition (same idea as Claude/Gemini).
+                CursorHexDotView(frame: frame, color: TetherLiveTheme.label, size: size * 0.92)
+                    .rotationEffect(.degrees(-32))
+                    .contentTransition(.opacity)
             case .codex:
                 Text(style.character(frame: frame))
                     .font(.system(size: size * 0.72, weight: .bold, design: .monospaced))
@@ -243,6 +245,37 @@ struct CLIThinkingGlyph: View {
             }
         }
         .opacity(dimmed ? 0.7 : 1)
+    }
+}
+
+/// Cursor thinking mark — DotmHex1-style hex matrix with dual-head perimeter chase.
+/// Circles (not Canvas) so ActivityKit can opacity-transition each cell like Gemini Braille.
+struct CursorHexDotView: View {
+    var frame: Int
+    var color: Color
+    var size: CGFloat
+
+    var body: some View {
+        let rowCounts = AgentThinkingGlyph.cursorHexRowCounts
+        let maxCols = rowCounts.max() ?? 5
+        let colPitch = size / CGFloat(maxCols)
+        let dot = colPitch * 0.42
+        let gap = colPitch - dot
+        let rowPitch = colPitch * (CGFloat(3.0).squareRoot() / 2)
+        let rowGap = max(1, rowPitch - dot)
+
+        VStack(spacing: rowGap) {
+            ForEach(Array(rowCounts.enumerated()), id: \.offset) { row, count in
+                HStack(spacing: gap) {
+                    ForEach(0..<count, id: \.self) { col in
+                        Circle()
+                            .fill(color.opacity(AgentThinkingGlyph.cursorHexOpacity(row: row, col: col, frame: frame)))
+                            .frame(width: dot, height: dot)
+                    }
+                }
+            }
+        }
+        .frame(width: size, height: size)
     }
 }
 

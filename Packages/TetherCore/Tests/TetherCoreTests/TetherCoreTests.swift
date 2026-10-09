@@ -389,6 +389,7 @@ import Testing
     let commit = try await provider.commitUpload(id: id)
     #expect(commit.fileName == "note.txt")
     #expect(commit.path.string == "/Inbox/note.txt")
+    #expect(commit.hostAbsolutePath == inbox.appendingPathComponent("note.txt").path)
     #expect(try Data(contentsOf: inbox.appendingPathComponent("note.txt")) == payload)
 
     let again = Data("second".utf8)
@@ -397,6 +398,7 @@ import Testing
     let commit2 = try await provider.commitUpload(id: id2)
     #expect(commit2.fileName == "note (2).txt")
     #expect(InboxShare.isInbox(commit2.path))
+    #expect(commit2.hostAbsolutePath == inbox.appendingPathComponent("note (2).txt").path)
     #expect(try Data(contentsOf: inbox.appendingPathComponent("note (2).txt")) == again)
 
     #expect(throws: PathError.self) {
@@ -474,6 +476,7 @@ final class TestHost: HostServing, @unchecked Sendable {
     let abuse = AbuseGuard()
     var keys: [String: SymmetricKey] = [:]
     var connectedNames: [String] = []
+    var receiveAnnounceCount = 0
     let lock = NSLock()
 
     init(offer: PairingOffer?, files: MemoryFileProvider) {
@@ -494,7 +497,14 @@ final class TestHost: HostServing, @unchecked Sendable {
     func sessionApprovalRequired() -> Bool { false }
     func decide(_ request: ApprovalRequest) async -> Bool { true }
     func note(_ event: String) {}
-    func didReceiveUpload(path: VirtualPath, fileName: String, fromDevice deviceName: String) {}
+    func didReceiveUpload(path: VirtualPath, fileName: String, fromDevice deviceName: String) {
+        _ = path
+        _ = fileName
+        _ = deviceName
+        lock.lock()
+        receiveAnnounceCount += 1
+        lock.unlock()
+    }
     func connected(deviceId: String, name: String) {
         lock.lock()
         connectedNames.append(name)

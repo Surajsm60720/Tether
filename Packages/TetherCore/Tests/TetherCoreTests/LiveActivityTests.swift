@@ -135,4 +135,19 @@ import Testing
     #expect(AgentThinkingGlyph.style(for: "codex").tickInterval == .seconds(2))
     let mask = AgentThinkingGlyph.style(for: "gemini").brailleSixDotMask(frame: 0)
     #expect(mask == 0x0B)
+
+    #expect(AgentThinkingGlyph.style(for: "cursor") == .cursor)
+    #expect(AgentThinkingGlyph.style(for: "cursor-agent") == .cursor)
+    #expect(AgentThinkingGlyph.style(for: "cursor").tickInterval == .milliseconds(200))
+    #expect(AgentThinkingGlyph.cursorHexRowCounts == [3, 4, 5, 4, 3])
+    #expect(AgentThinkingGlyph.cursorHexPerimeter.count == 12)
+    #expect(AgentThinkingGlyph.cursorHexPhaseSteps == AgentThinkingGlyph.cursorHexPerimeter.count)
+    // Center stays dim; a perimeter head cell brightens as the chase moves.
+    #expect(AgentThinkingGlyph.cursorHexOpacity(row: 2, col: 2, frame: 0) == 0.12)
+    let head = AgentThinkingGlyph.cursorHexOpacity(row: 0, col: 0, frame: 0)
+    #expect(head > 0.5)
+    // Next tick snaps the head to the following perimeter cell (discrete, Gemini-like).
+    let next = AgentThinkingGlyph.cursorHexOpacity(row: 0, col: 1, frame: 1)
+    #expect(next > 0.5)
+    #expect(AgentThinkingGlyph.cursorHexOpacity(row: 0, col: 0, frame: 1) < head)
 }

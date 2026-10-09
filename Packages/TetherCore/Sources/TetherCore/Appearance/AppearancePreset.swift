@@ -141,8 +141,9 @@ public enum AppearancePresets: Sendable {
     public static let neutral = AppearancePreset(
         id: "neutral",
         name: "Neutral",
+        // Mid gray — not pure white. White accent makes `.borderedProminent` labels vanish on dark UI.
         accent: ThemeRGBA(hex: "#8E8E93")!,
-        accentText: ThemeRGBA(hex: "#636366")!,
+        accentText: ThemeRGBA(hex: "#AEAEB2")!,
         success: ThemeRGBA(hex: "#4CC38A")!,
         warning: ThemeRGBA(hex: "#F0A84A")!,
         danger: ThemeRGBA(hex: "#FF6B6B")!,

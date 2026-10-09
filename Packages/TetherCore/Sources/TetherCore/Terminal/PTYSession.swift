@@ -199,18 +199,19 @@ public final class PTYSession: @unchecked Sendable {
     }
 
     /// Groups terminal output. A keystroke echo goes out quickly. A long run is
-    /// batched so the phone is not asked to redraw on every read.
+    /// batched so the phone is not asked to redraw on every read. HostSession
+    /// coalesces further before each encrypted `term.data` frame.
     private func emit(_ data: Data) {
         pendingOut.append(data)
-        let streaming = lastFlush.map { DispatchTime.now() < $0 + .milliseconds(35) } ?? false
-        let cap = streaming ? 64 * 1024 : 12 * 1024
+        let streaming = lastFlush.map { DispatchTime.now() < $0 + .milliseconds(60) } ?? false
+        let cap = streaming ? 64 * 1024 : 16 * 1024
         if pendingOut.count >= cap {
             flushOut()
             return
         }
         guard !flushScheduled else { return }
         flushScheduled = true
-        let delay: DispatchTimeInterval = streaming ? .milliseconds(40) : .milliseconds(10)
+        let delay: DispatchTimeInterval = streaming ? .milliseconds(64) : .milliseconds(12)
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.flushScheduled = false

@@ -75,10 +75,12 @@ import Testing
     defer { try? FileManager.default.removeItem(at: uploadSrc) }
     try Data("from phone".utf8).write(to: uploadSrc)
     let uploadProgress = ProgressProbe()
-    try await client.upload(file: uploadSrc, toDirectory: "/Docs", fileName: "from-phone.txt", progress: { done, total in
+    let uploadCommit = try await client.upload(file: uploadSrc, toDirectory: "/Docs", fileName: "from-phone.txt", progress: { done, total in
         uploadProgress.set(done, total)
     })
     #expect(uploadProgress.done == uploadProgress.total)
+    #expect(uploadCommit.hostAbsolutePath == "/tmp/TetherDemo/Docs/from-phone.txt")
+    #expect(uploadCommit.path.string == "/Docs/from-phone.txt")
     let uploaded = try await client.read(path: "/Docs/from-phone.txt", offset: 0, length: 50)
     #expect(String(data: uploaded.data, encoding: .utf8) == "from phone")
 
@@ -283,7 +285,7 @@ import Testing
 }
 
 @Test func v1E2E_changelogListsEveryShippedVersion() throws {
-    #expect(AppChangelog.current == "3.1")
+    #expect(AppChangelog.current == "3.2")
     let versions = Set(AppChangelog.releases.map(\.version))
     #expect(versions.contains("1.0"))
     #expect(versions.contains("1.1"))
@@ -297,6 +299,7 @@ import Testing
     #expect(versions.contains("2.6"))
     #expect(versions.contains("3.0"))
     #expect(versions.contains("3.1"))
+    #expect(versions.contains("3.2"))
     let v1 = try #require(AppChangelog.releases.first { $0.version == "1.0" })
     #expect(v1.items.count >= 8)
     let v2 = try #require(AppChangelog.releases.first { $0.version == "2.0" })
@@ -320,6 +323,24 @@ import Testing
         $0.localizedCaseInsensitiveContains("Appearance")
             || $0.localizedCaseInsensitiveContains("preset")
             || $0.localizedCaseInsensitiveContains("menu bar")
+    }))
+    let v32 = try #require(AppChangelog.releases.first { $0.version == "3.2" })
+    #expect(v32.items.contains(where: {
+        $0.localizedCaseInsensitiveContains("Attach")
+            || $0.localizedCaseInsensitiveContains("paperclip")
+            || $0.localizedCaseInsensitiveContains("Inbox")
+    }))
+    #expect(v32.items.contains(where: {
+        $0.localizedCaseInsensitiveContains("Shelf")
+    }))
+    #expect(v32.items.contains(where: {
+        $0.localizedCaseInsensitiveContains("Neutral")
+            || $0.localizedCaseInsensitiveContains("white")
+    }))
+    #expect(v32.items.contains(where: {
+        $0.localizedCaseInsensitiveContains("Wi-Fi")
+            || $0.localizedCaseInsensitiveContains("coalesc")
+            || $0.localizedCaseInsensitiveContains("Island")
     }))
 }
 

@@ -362,7 +362,12 @@ private actor HostSession {
             guard let id = message.header.uploadId else { throw ProtocolFailure.malformed }
             let commit = try await files.commitUpload(id: id)
             server.note("Upload finished \(commit.path.string)")
-            server.didReceiveUpload(path: commit.path, fileName: commit.fileName, fromDevice: deviceName)
+            // Agent attach sets notifyReceive=false so the Shelf stays closed.
+            if message.header.notifyReceive ?? true {
+                server.didReceiveUpload(path: commit.path, fileName: commit.fileName, fromDevice: deviceName)
+            }
+            header.path = commit.path.string
+            header.hostPath = commit.hostAbsolutePath
             try await send(WireMessage(kind: .response, header: header))
         case Op.writeAbort:
             if let id = message.header.uploadId {
@@ -686,13 +691,15 @@ public actor ClientConnection {
         finished = true
     }
 
+    @discardableResult
     public func upload(
         file: URL,
         toDirectory directory: String,
         fileName: String,
         overwrite: Bool = false,
+        notifyReceive: Bool = true,
         progress: @escaping @Sendable (UInt64, UInt64) -> Void
-    ) async throws {
+    ) async throws -> UploadCommit {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         let size = try handle.seekToEnd()
@@ -742,8 +749,13 @@ public actor ClientConnection {
             var commit = Header()
             commit.op = Op.writeCommit
             commit.uploadId = uploadId
-            _ = try await roundTrip(commit, timeout: .seconds(30))
+            commit.notifyReceive = notifyReceive
+            let reply = try await roundTrip(commit, timeout: .seconds(30))
             progress(size, size)
+            let finalPath = try VirtualPath.parse(reply.header.path ?? virtual)
+            let finalName = finalPath.components.last ?? fileName
+            let hostPath = reply.header.hostPath ?? finalPath.string
+            return UploadCommit(path: finalPath, fileName: finalName, hostAbsolutePath: hostPath)
         } catch {
             var abort = Header()
             abort.op = Op.writeAbort
@@ -1067,34 +1079,109 @@ private struct TerminalPump: Sendable {
     var cancel: @Sendable () -> Void
 }
 
-private enum TerminalPumpItem: Sendable {
-    case data(Data)
-    case exit(Int32)
+/// Accumulates PTY chunks so the host sends fewer Wi-Fi frames under agent load.
+private actor TerminalOutMailbox {
+    private var pending = Data()
+    private var exitCode: Int32?
+    private var closed = false
+    private var signal: CheckedContinuation<Void, Never>?
+
+    func pushData(_ data: Data) {
+        guard !data.isEmpty, exitCode == nil, !closed else { return }
+        pending.append(data)
+        resumeWaiter()
+    }
+
+    func pushExit(_ code: Int32) {
+        guard exitCode == nil else { return }
+        exitCode = code
+        resumeWaiter()
+    }
+
+    func cancel() {
+        closed = true
+        resumeWaiter()
+    }
+
+    /// Waits until there is pending data, an exit code, or cancel with nothing left.
+    func waitUntilReady() async -> Bool {
+        if !pending.isEmpty || exitCode != nil { return true }
+        if closed { return false }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            signal = continuation
+        }
+        if !pending.isEmpty || exitCode != nil { return true }
+        return !closed || !pending.isEmpty || exitCode != nil
+    }
+
+    var pendingCount: Int { pending.count }
+
+    var finishedExit: Int32? {
+        guard pending.isEmpty else { return nil }
+        return exitCode
+    }
+
+    func take(maxBytes: Int) -> Data {
+        let count = min(TerminalOutPolicy.takeCount(pendingBytes: pending.count), maxBytes)
+        guard count > 0 else { return Data() }
+        if count >= pending.count {
+            let out = pending
+            pending = Data()
+            pending.reserveCapacity(8 * 1024)
+            return out
+        }
+        let out = Data(pending.prefix(count))
+        pending.removeFirst(count)
+        return out
+    }
+
+    private func resumeWaiter() {
+        let waiter = signal
+        signal = nil
+        waiter?.resume()
+    }
 }
 
 private extension HostSession {
     func startTerminalPump(session: String) -> TerminalPump {
-        let (stream, continuation) = AsyncStream.makeStream(of: TerminalPumpItem.self, bufferingPolicy: .unbounded)
+        let mailbox = TerminalOutMailbox()
         Task {
-            for await item in stream {
-                switch item {
-                case let .data(data):
-                    await self.emitTerminalData(session: session, data: data)
-                case let .exit(code):
+            var lastFlush: ContinuousClock.Instant?
+            while await mailbox.waitUntilReady() {
+                let pendingBytes = await mailbox.pendingCount
+                let sinceMs: Int? = lastFlush.map { instant in
+                    let delta = ContinuousClock.now - instant
+                    return Int(delta.components.seconds * 1000
+                        + delta.components.attoseconds / 1_000_000_000_000_000)
+                }
+                let holdMs = TerminalOutPolicy.holdMilliseconds(
+                    pendingBytes: pendingBytes,
+                    msSinceLastFlush: sinceMs
+                )
+                if holdMs > 0 {
+                    try? await Task.sleep(for: .milliseconds(holdMs))
+                }
+                let batch = await mailbox.take(maxBytes: TerminalOutPolicy.hardCapBytes)
+                if !batch.isEmpty {
+                    await self.emitTerminalData(session: session, data: batch)
+                    lastFlush = .now
+                }
+                if let code = await mailbox.finishedExit {
                     await self.emitTerminalExit(session: session, code: code)
+                    break
                 }
             }
         }
         return TerminalPump(
             data: { data in
-                guard !data.isEmpty else { return }
-                continuation.yield(.data(data))
+                Task { await mailbox.pushData(data) }
             },
             exit: { code in
-                continuation.yield(.exit(code))
-                continuation.finish()
+                Task { await mailbox.pushExit(code) }
             },
-            cancel: { continuation.finish() }
+            cancel: {
+                Task { await mailbox.cancel() }
+            }
         )
     }
 

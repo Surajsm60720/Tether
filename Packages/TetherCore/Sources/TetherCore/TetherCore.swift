@@ -58,10 +58,46 @@ public enum InboxShare: Sendable {
 public struct UploadCommit: Sendable, Equatable {
     public var path: VirtualPath
     public var fileName: String
+    /// Real on-disk absolute path on the Mac (or a synthetic path in demo/memory providers).
+    public var hostAbsolutePath: String
 
-    public init(path: VirtualPath, fileName: String) {
+    public init(path: VirtualPath, fileName: String, hostAbsolutePath: String) {
         self.path = path
         self.fileName = fileName
+        self.hostAbsolutePath = hostAbsolutePath
+    }
+}
+
+/// Shell-safe quoting for paths injected into a live agent PTY.
+public enum AgentAttachPath: Sendable {
+    /// Quote for paste into agent input. Paths without spaces/specials stay bare.
+    public static func quoted(_ absolutePath: String) -> String {
+        let needsQuote = absolutePath.contains(where: { character in
+            character.isWhitespace
+                || character == "'"
+                || character == "\""
+                || character == "\\"
+                || character == "$"
+                || character == "`"
+                || character == "*"
+                || character == "?"
+                || character == "["
+                || character == "]"
+                || character == "("
+                || character == ")"
+                || character == "{"
+                || character == "}"
+                || character == "|"
+                || character == "&"
+                || character == ";"
+                || character == "<"
+                || character == ">"
+                || character == "\n"
+                || character == "\t"
+        })
+        guard needsQuote else { return absolutePath }
+        let escaped = absolutePath.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)'"
     }
 }
 

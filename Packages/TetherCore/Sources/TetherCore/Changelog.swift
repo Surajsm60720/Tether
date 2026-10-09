@@ -14,9 +14,16 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "3.1"
+    public static let current = "3.2"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "3.2", items: [
+            "Attach a photo or file from a live agent session: it lands in the Mac Inbox and the absolute path is pasted into the agent chat.",
+            "Agent attach does not open the Shelf — Send from the Send tab still does, so drag-out stays intentional.",
+            "Neutral appearance uses classical white accent text instead of grey, so type stays crisp on dark backgrounds.",
+            "Live agent output is coalesced into fewer Wi-Fi frames on the Mac so busy sessions share the link more fairly with other apps.",
+            "Cursor’s Island thinking mark advances one hex cell per tick so the chase stays crisp when ActivityKit batches updates.",
+        ]),
         ReleaseNotes(version: "3.1", items: [
             "Appearance presets (Gold, Blue, Green, Neutral, Midnight) on Mac and iPhone — accent and type you can change in Settings.",
             "GUI text size and weight are adjustable; the iPhone terminal keeps its own font size slider.",

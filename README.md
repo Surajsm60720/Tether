@@ -1,6 +1,6 @@
 # Tether
 
-Version 3.1.
+Version 3.2.
 
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, send files into a Mac Inbox (with a floating Shelf for drag-out), run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
@@ -16,7 +16,7 @@ There is no account, no third-party networking library, and no third-party crypt
 - Send photos and files from the iPhone **Send** tab (or the Share sheet) into the Mac **Inbox**. On the Mac, open the floating **Shelf** to drag received files into Finder, Mail, Slack, and other apps, or manage them from the Inbox page.
 - Watch transfer progress, retry, and cancel.
 - Use a terminal on the phone for everyday file commands (`ls`, `cd`, `cat`, `find`, and the rest listed below). Those commands stay inside the shared folders.
-- Type an allowlisted agent name (`claude`, `agent`, `codex`, `cursor`, and the rest) to open a live terminal session on the Mac. The phone is the screen and keyboard. The agent keeps running if you leave the app; reconnect resumes it. Live Activities and the Dynamic Island show transfer progress and live agent status (Thinking, Working, Editing, Needs you) while you use other apps.
+- Type an allowlisted agent name (`claude`, `agent`, `codex`, `cursor`, and the rest) to open a live terminal session on the Mac. The phone is the screen and keyboard. From a live agent, the paperclip attaches a photo or file into the Mac Inbox and pastes the Mac path into the agent (without opening the Shelf). The agent keeps running if you leave the app; reconnect resumes it. Live Activities and the Dynamic Island show transfer progress and live agent status (Thinking, Working, Editing, Needs you) while you use other apps.
 - Ask the Mac who you are, print a short system summary, and open a live monitor for CPU, memory, swap, disk, network, battery, temperature, and the busiest processes.
 - Approve or revoke each iPhone from the Mac. A revoked phone cannot open a new session.
 - Reach the Mac from another network with a saved address or a relay, after you have paired once on Wi-Fi.
@@ -249,6 +249,16 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 ## Changelog
 
 The same notes are in Settings → What's new on both the Mac and the iPhone.
+
+### 3.2
+
+Attach files into a live agent, plus quieter agent networking and Island polish.
+
+- Paperclip on a live agent: pick a photo or file → upload to Inbox → paste the Mac absolute path into the agent (no Enter).
+- Agent attach skips the Shelf; Send tab / Share sheet still announce and can open the Shelf.
+- Neutral accent text stays white on dark surfaces; Send’s prominent Photos button stays readable on Neutral.
+- Busy agent PTY output is coalesced on the Mac into fewer Wi-Fi frames.
+- Cursor Island thinking mark advances one hex cell per tick under ActivityKit batching.
 
 ### 3.1
 

@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 import TetherCore
 import UIKit
@@ -17,6 +18,10 @@ struct TerminalScreen: View {
     @State private var completionToken = 0
     @State private var suggestions: [CompletionSuggestion] = []
     @State private var suggestToken = 0
+    @State private var showAttachSource = false
+    @State private var attachFileImporter = false
+    @State private var attachPhotoItems: [PhotosPickerItem] = []
+    @State private var showAttachPhotosPicker = false
     /// Tall enough for ~8–10 rows; the menu itself scrolls for the rest.
     private let menuMaxHeight: CGFloat = 260
 
@@ -81,6 +86,38 @@ struct TerminalScreen: View {
             if requested {
                 importing = true
                 store.requestUpload = false
+            }
+        }
+        .confirmationDialog("Attach to agent", isPresented: $showAttachSource, titleVisibility: .visible) {
+            Button("Photos") { showAttachPhotosPicker = true }
+            Button("Files") { attachFileImporter = true }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Send a photo or file to the Mac Inbox, then paste its path into the agent.")
+        }
+        .photosPicker(
+            isPresented: $showAttachPhotosPicker,
+            selection: $attachPhotoItems,
+            maxSelectionCount: 1,
+            matching: .any(of: [.images, .videos]),
+            photoLibrary: .shared()
+        )
+        .fileImporter(
+            isPresented: $attachFileImporter,
+            allowedContentTypes: [.item, .audio, .movie, .image, .data],
+            allowsMultipleSelection: false
+        ) { result in
+            if case let .success(urls) = result, let url = urls.first {
+                Task { await store.attachToAgent(url: url) }
+            }
+        }
+        .onChange(of: attachPhotoItems) { _, items in
+            guard let item = items.first else { return }
+            Task {
+                if let picked = try? await item.loadTransferable(type: PickedFile.self) {
+                    await store.attachToAgent(url: picked.url)
+                }
+                attachPhotoItems = []
             }
         }
     }
@@ -282,13 +319,19 @@ struct TerminalScreen: View {
                 .frame(minWidth: 44, minHeight: 44)
                 .accessibilityLabel("Back to files")
                 Button {
-                    UIPasteboard.general.string = store.agentSurface?.screen.plainText()
+                    showAttachSource = true
                 } label: {
-                    Image(systemName: "doc.on.doc")
-                        .foregroundStyle(TerminalTheme.standard.dim)
+                    if store.agentAttachBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "paperclip")
+                            .foregroundStyle(TerminalTheme.standard.dim)
+                    }
                 }
+                .disabled(!store.canAttachToAgent)
                 .frame(minWidth: 44, minHeight: 44)
-                .accessibilityLabel("Copy screen")
+                .accessibilityLabel("Attach file to agent")
             }
             Button {
                 store.closeFocusedSlot()

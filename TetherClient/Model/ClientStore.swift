@@ -75,6 +75,8 @@ final class ClientStore {
     var notice: String?
     var feedbackCue: FeedbackCue = .success
     var feedbackTick = 0
+    /// True while Attach-to-agent upload + path inject is in flight.
+    var agentAttachBusy = false
     var remoteHostIDs: Set<String> = []
     /// Mirrors the Mac preference. Synced while connected; applied on the next connect if offline.
     var preventSleepWhileActive: Bool
@@ -737,6 +739,61 @@ final class ClientStore {
         sessionTab = SessionTabIndex.transfers
     }
 
+    /// Whether the focused live agent can accept an Inbox attach + path paste.
+    var canAttachToAgent: Bool {
+        guard !agentAttachBusy else { return false }
+        guard connected || demoMode else { return false }
+        guard let slot = focusedSlot, slot.kind == .agent, !slot.agentExited else { return false }
+        return true
+    }
+
+    /// Upload a file/photo into Inbox, then paste the Mac absolute path into the live agent.
+    func attachToAgent(url: URL) async {
+        guard !agentAttachBusy else { return }
+        guard connected || demoMode else {
+            notice = "Connect to your Mac to attach a file."
+            cue(.warning)
+            return
+        }
+        guard let live = focusedSlot, live.kind == .agent, !live.agentExited else {
+            notice = "Start a live agent before attaching a file."
+            cue(.warning)
+            return
+        }
+        agentAttachBusy = true
+        defer { agentAttachBusy = false }
+        let name = url.lastPathComponent
+        let directory = "/\(InboxShare.name)"
+        let full = "\(directory)/\(name)"
+        let sizeHint = Self.fileByteCount(at: url)
+        let item = TransferItem(name: name, path: full, direction: .up, total: max(sizeHint, 1))
+        transfers.insert(item, at: 0)
+        publishTransferLiveActivity(force: true)
+        let id = item.id
+        let hostPath = await performUpload(
+            id: id,
+            source: url,
+            directory: directory,
+            name: name,
+            sizeHint: sizeHint,
+            notifyReceive: false
+        )
+        guard let hostPath, !hostPath.isEmpty else {
+            notice = "Couldn't send that file to the Inbox."
+            cue(.warning)
+            return
+        }
+        guard let slot = focusedSlot, slot.kind == .agent, !slot.agentExited else {
+            notice = "File landed in Inbox, but the agent session ended."
+            cue(.warning)
+            return
+        }
+        let pasted = AgentAttachPath.quoted(hostPath)
+        sendAgentInput(.text(pasted))
+        notice = "Attached \(name)"
+        cue(.success)
+    }
+
     private func enqueueUpload(url: URL, directory: String, fileName: String, fullPath: String) async {
         let sizeHint = Self.fileByteCount(at: url)
         let item = TransferItem(name: fileName, path: fullPath, direction: .up, total: max(sizeHint, 1))
@@ -744,15 +801,31 @@ final class ClientStore {
         publishTransferLiveActivity(force: true)
         let id = item.id
         transferTasks[id] = Task { @MainActor in
-            await self.performUpload(id: id, source: url, directory: directory, name: fileName, sizeHint: sizeHint)
+            _ = await self.performUpload(
+                id: id,
+                source: url,
+                directory: directory,
+                name: fileName,
+                sizeHint: sizeHint,
+                notifyReceive: true
+            )
             self.transferTasks[id] = nil
         }
     }
 
-    private func performUpload(id: UUID, source: URL, directory: String, name: String, sizeHint: UInt64) async {
+    @discardableResult
+    private func performUpload(
+        id: UUID,
+        source: URL,
+        directory: String,
+        name: String,
+        sizeHint: UInt64,
+        notifyReceive: Bool = true
+    ) async -> String? {
         let full = directory == "/" ? "/\(name)" : "\(directory)/\(name)"
         var localURL = source
         var cleanup: URL?
+        var hostPath: String?
         do {
             // Copy under a security scope first so fileImporter / iCloud URLs stay readable
             // for the whole transfer (the picker scope ends when sendToInbox returns).
@@ -769,16 +842,23 @@ final class ClientStore {
                     demoFiles.addShare(name: InboxShare.name, writable: true)
                 }
                 try demoFiles.writeFile(path: full, data: data)
+                hostPath = "/tmp/TetherDemo" + full
                 updateTransfer(id, sent: UInt64(data.count), total: UInt64(data.count), state: .completed)
                 invalidateCompletionCache()
             } else if let connection {
                 let clock = UploadProgressClock()
-                try await connection.upload(file: localURL, toDirectory: directory, fileName: name) { sent, total in
+                let commit = try await connection.upload(
+                    file: localURL,
+                    toDirectory: directory,
+                    fileName: name,
+                    notifyReceive: notifyReceive
+                ) { sent, total in
                     guard clock.shouldPublish(sent: sent, total: total) else { return }
                     Task { @MainActor in
                         self.updateTransfer(id, sent: sent, total: max(total, 1), state: .active)
                     }
                 }
+                hostPath = commit.hostAbsolutePath
                 updateTransfer(id, sent: size, total: size, state: .completed)
             } else {
                 throw ProtocolFailure(code: .busy, message: "Not connected to a Mac.")
@@ -803,6 +883,7 @@ final class ClientStore {
         if let cleanup {
             try? FileManager.default.removeItem(at: cleanup)
         }
+        return hostPath
     }
 
     private static func fileByteCount(at url: URL) -> UInt64 {

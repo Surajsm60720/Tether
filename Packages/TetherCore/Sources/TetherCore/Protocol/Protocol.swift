@@ -218,6 +218,11 @@ public struct Header: Codable, Sendable, Equatable {
     public var size: UInt64?
     public var overwrite: Bool?
     public var uploadId: String?
+    /// Absolute Mac path of a committed upload (writeCommit response only).
+    public var hostPath: String?
+    /// When `false` on write.commit, the Mac skips Inbox/Shelf announce (agent attach).
+    /// Absent or `true` keeps the normal Send → Shelf behavior.
+    public var notifyReceive: Bool?
     public var received: UInt64?
     public var eof: Bool?
     public var totalSize: UInt64?

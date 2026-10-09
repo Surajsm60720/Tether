@@ -24,7 +24,8 @@ struct SendView: View {
                         .frame(maxWidth: 220)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(Color.tether.accent)
+                // Prefer accentText when accent is too light for a prominent fill (e.g. Neutral).
+                .tint(SendAccent.prominentFill)
 
                 Button {
                     importing = true
@@ -33,6 +34,7 @@ struct SendView: View {
                         .frame(maxWidth: 220)
                 }
                 .buttonStyle(.bordered)
+                .tint(SendAccent.prominentFill)
             }
             .navigationTitle("Send")
             .navigationBarTitleDisplayMode(.inline)
@@ -61,5 +63,19 @@ struct SendView: View {
                 }
             }
         }
+    }
+}
+
+/// Prominent Send buttons need a fill dark enough that the system white label stays readable.
+@MainActor
+private enum SendAccent {
+    static var prominentFill: Color {
+        let accent = AppearancePreferences.shared.preset.accent
+        // Relative luminance (sRGB approx). Near-white accents get a mid-gray fill instead.
+        let luminance = 0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b
+        if luminance > 0.75 {
+            return Color(ThemeRGBA(hex: "#8E8E93")!)
+        }
+        return Color(accent)
     }
 }

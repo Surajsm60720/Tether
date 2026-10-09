@@ -163,7 +163,11 @@ public final class DiskFileProvider: FileProvider, @unchecked Sendable {
             try FileManager.default.removeItem(at: upload.finalURL)
         }
         try FileManager.default.moveItem(at: upload.tempURL, to: upload.finalURL)
-        return UploadCommit(path: upload.virtualPath, fileName: upload.finalURL.lastPathComponent)
+        return UploadCommit(
+            path: upload.virtualPath,
+            fileName: upload.finalURL.lastPathComponent,
+            hostAbsolutePath: upload.finalURL.path
+        )
     }
 
     public func abortUpload(id: String) async throws {

@@ -100,7 +100,9 @@ public enum AgentThinkingGlyph: Sendable {
         case .claude: .milliseconds(320)
         case .gemini: .milliseconds(120)
         case .codex: .seconds(2)
-        case .cursor, .generic: .milliseconds(800)
+        /// One perimeter cell per tick (12 × 200 ms ≈ 2.4 s). Sub-cell steps look spotty when ActivityKit coalesces updates.
+        case .cursor: .milliseconds(200)
+        case .generic: .milliseconds(800)
         }
     }
 
@@ -109,8 +111,86 @@ public enum AgentThinkingGlyph: Sendable {
         case .claude: Self.claudeFrames
         case .gemini: Self.geminiFrames
         case .codex: ["·"]
-        case .cursor, .generic: ["✦"]
+        /// Cursor uses drawn hex dots (`cursorHexOpacity`); character is a fallback only.
+        case .cursor: ["⬡"]
+        case .generic: ["✦"]
         }
+    }
+
+    // MARK: - Cursor DotmHex1-style hex matrix
+
+    /// Flat-top hex row widths (center row is widest).
+    public static let cursorHexRowCounts: [Int] = [3, 4, 5, 4, 3]
+
+    /// Perimeter chase path (`row,col` in each row’s local column space).
+    public static let cursorHexPerimeter: [(row: Int, col: Int)] = [
+        (0, 0), (0, 1), (0, 2),
+        (1, 3),
+        (2, 4),
+        (3, 3),
+        (4, 2), (4, 1), (4, 0),
+        (3, 0),
+        (2, 0),
+        (1, 0),
+    ]
+
+    /// Packed `row * 8 + col` → perimeter index for O(1) cell lookups.
+    private static let cursorHexPathIndexByCell: [Int: Int] = {
+        var map: [Int: Int] = [:]
+        map.reserveCapacity(cursorHexPerimeter.count)
+        for (index, cell) in cursorHexPerimeter.enumerated() {
+            map[cell.row * 8 + cell.col] = index
+        }
+        return map
+    }()
+
+    /// One step per perimeter cell — discrete like Gemini’s Braille frames.
+    public static let cursorHexPhaseSteps = 12
+
+    /// Opacity for one hex cell at `glyphFrame` (0…1). Port of DotmHex1 perimeter glow,
+    /// quantized to whole cells so skipped ActivityKit frames still read as a clean chase.
+    public static func cursorHexOpacity(row: Int, col: Int, frame: Int) -> Double {
+        let base = 0.12
+        let mid = 0.22
+        let high = 1.0
+        let center = 0.12
+        // Short trail: head + ~2 fading cells (Gemini-crisp, not a long soft smear).
+        let trailSpan = 2.5
+        let pathLen = Double(cursorHexPerimeter.count)
+        let halfPath = pathLen / 2
+
+        if row == 2, col == 2 { return center }
+
+        let pathIndex = cursorHexPathIndexByCell[row * 8 + col]
+        // Snap heads onto integer perimeter indices — no sub-cell interpolation.
+        let headA = Double(abs(frame) % cursorHexPhaseSteps)
+        let headB = modPositive(headA + halfPath, pathLen)
+
+        if let pathIndex {
+            let glow = max(
+                glowAlongPath(head: headA, pathIndex: Double(pathIndex), pathLen: pathLen, trailSpan: trailSpan),
+                glowAlongPath(head: headB, pathIndex: Double(pathIndex), pathLen: pathLen, trailSpan: trailSpan) * 0.7
+            )
+            return min(high, base + glow * (high - base))
+        }
+
+        let centerFalloff = col == 2 ? mid : 0.16
+        return max(base, centerFalloff)
+    }
+
+    private static func modPositive(_ n: Double, _ m: Double) -> Double {
+        ((n.truncatingRemainder(dividingBy: m)) + m).truncatingRemainder(dividingBy: m)
+    }
+
+    private static func glowAlongPath(head: Double, pathIndex: Double, pathLen: Double, trailSpan: Double) -> Double {
+        let distance = modPositive(head - pathIndex, pathLen)
+        return 1 - smoothstep(0, trailSpan, distance)
+    }
+
+    private static func smoothstep(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {
+        guard edge1 > edge0 else { return x >= edge1 ? 1 : 0 }
+        let t = min(1, max(0, (x - edge0) / (edge1 - edge0)))
+        return t * t * (3 - 2 * t)
     }
 
     public func character(frame: Int) -> String {

@@ -9,6 +9,12 @@ import Testing
     #expect(AppearancePresets.resolve("gold").name == "Gold")
 }
 
+@Test func appearanceNeutralAccentIsNotNearWhite() {
+    let accent = AppearancePresets.neutral.accent
+    let luminance = 0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b
+    #expect(luminance < 0.75)
+}
+
 @Test func appearanceResolveUnknownFallsBackToGold() {
     let preset = AppearancePresets.resolve("not-a-real-theme")
     #expect(preset.id == "gold")
