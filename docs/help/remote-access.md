@@ -66,7 +66,7 @@ Both devices must stay signed in and connected for remote Tether use.
 
 ### A3. Bake Tailscale into Tether on the Mac
 
-1. Open **Tether Host → Other networks** (sidebar, Settings window, or menu-bar Settings).
+1. Open **Tether Host → Settings → Other networks** (⌘, or the sidebar Settings link).
 2. Turn **on** **Allow connections from other networks**.
 3. Under **Addresses**, confirm a row labeled **Tailscale** with something like `100.x.y.z:52173`.
    - If you only see **This network** (`192.168…` / `10.…`), Tailscale is not up on the Mac yet. Connect Tailscale, then leave Other networks and reopen it (or restart Host) so addresses refresh.

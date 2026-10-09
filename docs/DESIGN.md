@@ -11,6 +11,8 @@
 3. **Trust is visible.** Connection state, what is shared, and who is connected must always be visible and understandable. Security should feel reassuring, never scary.
 4. **Two voices, one product.** The GUI is friendly and spacious. The terminal is dense, monospaced, and unapologetically technical. They share color tokens and the same connection indicator.
 5. **Fast feeling.** Show skeletons and cached content immediately, then update. Never block the whole screen on a spinner.
+6. **Control center, not disco.** The Mac host is a day-to-day control surface: configuration and operations come first. Prefer clear status, reachability, and the few controls a normal user needs at a glance. Do not bury core function under glitter, novelty chrome, or optional flourish. If something can be configured, it must live where a user would expect it.
+7. **Sections vs Settings.** Sidebar **sections** hold only first-glance essentials (status, share folders, Inbox work, nearby iPhones). **Settings** (⌘,) holds tuning, preference, and infrequent setup. Never duplicate a Settings control inside a section — if it already exists in Settings, remove it from the section. When unsure whether a control belongs at first glance, put it in Settings.
 
 ---
 
@@ -27,7 +29,7 @@
 
 ## 3. Color tokens
 
-Define all colors in one `Theme` file using an asset catalog with Light/Dark variants. No raw hex values anywhere else in code.
+Define semantic colors in one `Theme` file. The asset catalog remains the compiled Gold fallback; live UI reads `AppearancePreferences` presets (TetherCore) so users can switch Gold / Blue / Green / Neutral / Midnight. No ad-hoc hex in views outside that pipeline.
 
 ### 3.1 Core palette
 
@@ -146,7 +148,7 @@ Rules:
 - Virtual shell only: a scrollable suggestion list above the prompt (folder/doc/terminal SF Symbol + name, max height ~260 pt, visible scroll indicators, count header) for live path and command matches; the full match list is kept — never truncated to a “N more” hint. Command rows show typed syntax and a short description; tap inserts. `help` shows the same height of scrollable catalog with syntax (flags/placeholders) per row. Esc dismisses the menu before clearing the draft. Live agents keep the PTY Tab behavior; no dropdown on the agent screen.
 
 ### 6.9 Settings
-Grouped list: Device name, Cache (size + Clear), Terminal font size slider, Forget all Macs (destructive, with confirmation), About with version and What's new.
+Grouped list: Device name, **Appearance** (preset picker: Gold / Blue / Green / Neutral / Midnight; GUI text size 13–20 pt; text weight), home-screen Icon, Cache (size + Clear), Terminal font size slider (independent of GUI type), Forget all Macs (destructive, with confirmation), About with version and What's new. Appearance uses the shared `AppearancePreferences` model from TetherCore (local UserDefaults; not synced to the Mac).
 
 ### 6.10 Live Activities / Dynamic Island (v2.3)
 Glanceable surfaces only — calm, few words, monospaced digits for percents and rates. Use Tether **gold** (`accent` / `#E8B04A` dark) explicitly — do not rely on system blue `.tint` inside the Island. Respect Reduce Motion and Always-On (`isLuminanceReduced`): no repeating pulse when dimmed. The whole Island is tappable; do **not** put clipped "Open Terminal" / "Transfers" labels in the bottom region.
@@ -160,13 +162,10 @@ Glanceable surfaces only — calm, few words, monospaced digits for percents and
 ## 7. macOS app
 
 ### 7.1 Menu bar item
-- Template image symbol; states: idle (outline), device connected (filled with a small dot), sharing paused (slashed). Provide an accessibility label that states the status. When the Inbox has unseen items, show a small count badge (or "N new" in the popover).
-- Popover window (style `.window`), width 320 pt, content in vertical sections:
-  1. **Header:** app name, status line ("Sharing 2 folders · 1 device connected"), master switch.
-  2. **Connected devices:** device name, connected duration, a small "Disconnect" button.
-  3. **Shared folders:** list with folder icon, name, access badge ("Read only" / "Can upload"). "Add folder…" button.
-  4. **Inbox / Shelf:** "Show Shelf", "Show Inbox", and an unseen-count line when relevant.
-  5. **Footer:** "Pair new iPhone…", "Settings…", "Quit".
+- Glyph: SF Symbol `infinity` (same mark as the Dock icon). Do **not** stamp the full Dock square into the menu bar as a template — that reads as a white blob. Accessibility label states status.
+- Use **`.menuBarExtraStyle(.menu)`** — a native system menu, not a custom window with bordered pill buttons.
+- Menu contents: Sharing toggle; Disconnect rows when phones are connected; optional "N new"; Show Shelf; Open Tether; Pair; Settings; Quit.
+- Do **not** list shared folders in the menu — manage those in the main window.
 
 ### 7.2 Pairing window
 - Single-purpose window 420×520 pt, non-resizable, centered.
@@ -177,20 +176,40 @@ Glanceable surfaces only — calm, few words, monospaced digits for percents and
 Native `NSAlert` style: title "Allow *<device>* to access your shared folders?", body "It will be able to browse and download from: *<share names>*." Buttons: **Allow** (default), **Don't Allow**. For shares that allow upload, add: "It can also add files to: *<names>*."
 
 ### 7.4 Main window sidebar
-Primary pages: Status, Shared folders, **Inbox**, iPhones, Other networks, Activity. A separate bottom sidebar row is a **Settings** `SettingsLink` (gear) that opens the full Settings window — the same scene as ⌘, and the menu bar popover — not a partial in-window copy.
+Primary pages (first-glance operations only): **Status**, **Shared folders**, **Inbox**, **iPhones**. A separate bottom sidebar row is a **Settings** `SettingsLink` (gear) that opens the full Settings window — the same scene as ⌘, and the menu bar popover — not a partial in-window copy. Do **not** put Other networks or Activity in the sidebar; those live only in Settings.
+
+**Status** is the operational dashboard: Mac identity line (read-only), sharing master switch, network/status, connected devices with Disconnect. Mac name editing and other preferences live in Settings → General — not on Status.
+
+**Shared folders** is the only place to add/remove folders and toggle Allow uploads.
+
+**iPhones** is for discovery on this network (Look again, Pair, Connect). Paired-device revoke lives in Settings → Devices.
 
 ### 7.4a Inbox page (v3.0)
-- List of files in the configured Inbox folder: thumbnail, name (middle truncation), size, sender device when known, received time.
-- Row actions: Open, Reveal in Finder, Move…, Copy, Delete. Toolbar: Clear all (with confirmation), Change Inbox folder….
-- Empty state: `tray`, "No files yet", "When you send from your iPhone, they show up here and on the Shelf."
+- List of files received from the iPhone: thumbnail, name (middle truncation), destination path, size, sender when known, received time.
+- Row actions: Open, Reveal in Finder, Move…, Delete. Toolbar: Clear list (with confirmation; does not delete files on disk).
+- Show the save destination as read-only context. **Change Inbox folder**, Shelf auto-show, and receive sound live only in Settings → General.
+- Empty state: `tray`, "No files yet", path in the description.
 
 ### 7.4b Shelf window (v3.0)
 - Floating utility panel (~420×120 pt, resizable horizontally), always-on-top optional via window level; closing it does not quit Tether.
-- Horizontal strip of recent Inbox items (thumbnail + short name). Each item is drag-out capable (file URL / `NSItemProvider`) into Finder, Mail, Slack, and other apps.
-- Footer: "Open Inbox" link; optional pin. Auto-show when a file arrives if Settings → "Open Shelf when a file arrives" is on (default on).
+- Horizontal strip of the **latest receive batch** only (thumbnail + short name). Multi-select + drag-out (`NSItemProvider`) into Finder and other apps.
+- No Inbox-folder or Shelf preference controls on the Shelf itself — those stay in Settings. Auto-show when a file arrives if Settings → "Show Shelf when a file arrives" is on (default on).
 
 ### 7.5 Settings window
-Standard Settings scene (⌘, / menu bar **Settings…** / sidebar Settings) with tabs: **General** (Mac name, launch at login, require approval each session, prevent sleep, **Inbox folder**, Open Shelf on receive, play sound on receive), **Folders**, **Devices**, **Other networks**, **Activity**, **What's new**.
+Standard Settings scene (⌘, / menu bar **Settings…** / sidebar Settings) with tabs:
+- **General** — Mac name, launch at login, require approval, prevent sleep, Inbox folder, Show Shelf on receive, play sound on receive.
+- **Appearance** — theme presets (Gold / Blue / Green / Neutral / Midnight), GUI text size and weight, Dock icon, version. Classic SwiftUI only.
+- **Devices** — paired iPhones + Revoke.
+- **Other networks** — remote listen, addresses, relay, iPhone setup code.
+- **Activity** — event log.
+- **What's new**.
+
+Do not mirror Shared folders management here (that is the Shared folders section). Do not put a Sharing master switch here when Status already has it. Themes retint accent / type tokens only — they must not restyle sidebar chrome or turn operational pages into a component showcase.
+
+### 7.5a Appearance model (v3.1)
+- Tokens live in TetherCore (`AppearancePreset`, `AppearancePreferences`). Apps map them in `Theme.swift` (`Color.tether.*`, `TetherType.*`, optional terminal palette).
+- Asset-catalog Gold colors remain the compiled fallback; live UI reads the active preset.
+- No glass-intensity knobs and no Mac↔iPhone preference sync in v3.1.
 
 ### 7.6 Behavior polish
 - Accessible keyboard shortcuts: `⌘,` Settings, `⌘N` Pair new iPhone (when the popover is key), `⌘Q` Quit.

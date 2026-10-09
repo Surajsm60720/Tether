@@ -1,6 +1,6 @@
 # Tether
 
-Version 3.0.
+Version 3.1.
 
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, send files into a Mac Inbox (with a floating Shelf for drag-out), run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
@@ -54,25 +54,23 @@ Open `Tether.xcodeproj`. The local package `Packages/TetherCore` is already part
 5. On first launch, add at least one folder. Nothing is shared until you choose it.
 6. If macOS asks for Local Network access, allow it. The host uses that permission to see the iPhone on Wi-Fi. You can confirm the advertisement with `dns-sd -B _tether._tcp`.
 
-The menu bar menu shows whether sharing is on, which phones are connected, and shortcuts to pair, open the window, and quit. The main window has five pages:
+The menu bar menu shows whether sharing is on, which phones are connected, and shortcuts to pair, open the window, and quit. The main window is a day-to-day control center — first-glance pages only; tuning lives in Settings:
 
 | Page | What it is for |
 |---|---|
-| Status | Mac name, sharing switch, network line, connected phones, and a short list of shared folders |
-| Shared folders | Add, rename, remove, and choose whether each folder accepts uploads |
-| Inbox | Files sent from the iPhone; Open, Reveal, Move, Delete; open the Shelf |
-| iPhones | Paired phones, including ones nearby, and revoke |
-| Other networks | Listen for connections from outside this Wi-Fi, show addresses, set a relay, and copy the setup code |
-| Activity | A short log of pairing and connection events. Filter and clear it here |
+| Status | Sharing switch, network line, and connected phones (Disconnect) |
+| Shared folders | Add, remove, and choose whether each folder accepts uploads |
+| Inbox | Files sent from the iPhone; Open, Reveal, Move, Clear list |
+| iPhones | Nearby phones — Look again, Pair, Connect |
 | Settings | Opens the full Settings window (same as ⌘, or the menu bar **Settings…**) |
 
-Settings includes General, Folders, iPhones, Other networks, Activity, and **What's new**.
+Settings includes **General** (Mac name, launch at login, approval, prevent sleep, Inbox folder, Shelf / sound on receive), **Appearance** (theme presets, text size/weight, Dock icon), **Devices** (paired phones + Revoke), **Other networks**, **Activity**, and **What's new**.
 
 Folders start read-only. Turn on **Allow uploads** for a folder before the phone can add files there. Uploads are still limited to that folder. Paths that try to escape it are rejected.
 
 The reserved **Inbox** share is always writable for paired phones. By default it uses `Documents/Tether Received` (change it in Settings → General). When a file arrives, the Shelf can open automatically so you can drag it into another app.
 
-**Pair new iPhone** opens a window with a QR code and a 16-character code grouped as `XXXX-XXXX-XXXX-XXXX`. Both expire after 120 seconds and work once. The Mac must approve the phone before pairing finishes. If you turn on **Require approval**, later sessions also wait for Allow on the Mac. Revoke a phone from the iPhones page or from Settings. Revoke deletes that phone’s key. The phone has to pair again.
+**Pair new iPhone** opens a window with a QR code and a 16-character code grouped as `XXXX-XXXX-XXXX-XXXX`. Both expire after 120 seconds and work once. The Mac must approve the phone before pairing finishes. If you turn on **Require approval**, later sessions also wait for Allow on the Mac. Revoke a phone from Settings → Devices. Revoke deletes that phone’s key. The phone has to pair again.
 
 ## Run the iPhone app
 
@@ -87,7 +85,7 @@ The iPhone target must be signed with your Apple ID. A simulator build is alread
 7. Tap **Pair**, scan the QR code, or type the 16-character code. On the Mac, tap **Allow**.
 8. The phone opens the shared folders. Files, Send, Terminal, and Transfers are the four tabs.
 
-iPhone Settings has the device name (what the Mac shows for this phone), the home-screen icon (Gold, Blue, Green, or Neutral; light, dark, and tinted follow the system), a cache size and clear button, terminal font size from 11 to 20 points, prevent Mac sleep while active (synced when connected), **Other networks** for the remote setup code, and **What's new** for this version.
+iPhone Settings has the device name (what the Mac shows for this phone), **Appearance** (same theme presets and GUI text size/weight as the Mac), the home-screen icon (Gold, Blue, Green, or Neutral; light, dark, and tinted follow the system), a cache size and clear button, terminal font size from 11 to 20 points (separate from GUI type), prevent Mac sleep while active (synced when connected), **Other networks** for the remote setup code, and **What's new** for this version.
 
 ## Everyday use on the iPhone
 
@@ -179,7 +177,7 @@ Step-by-step setup for Tailscale, relay, and port forward (including cellular �
 
 A home address such as `192.168.x.x` only works on that Wi-Fi. The internet cannot route to it. Tether has two ways to connect when Bonjour does not see the Mac.
 
-1. **A reachable address.** The Mac listens on port **52173** while **Allow connections from other networks** is on. The Other networks page lists this Mac’s addresses. A Tailscale address (`100.x`) is preferred when one exists, then a public address, then a VPN address, then the Wi-Fi address. You can type a hostname instead, for example the name you forwarded on your router. The phone tries that address when the Mac is not on the local network. Private Wi-Fi addresses are only tried briefly, then Tether falls through to the relay if you set one.
+1. **A reachable address.** The Mac listens on port **52173** while **Allow connections from other networks** is on. Settings → Other networks lists this Mac’s addresses. A Tailscale address (`100.x`) is preferred when one exists, then a public address, then a VPN address, then the Wi-Fi address. You can type a hostname instead, for example the name you forwarded on your router. The phone tries that address when the Mac is not on the local network. Private Wi-Fi addresses are only tried briefly, then Tether falls through to the relay if you set one.
 2. **A relay.** Run `tether-relay` on a computer that has a public port. The Mac and the iPhone both connect outward to it, so the home router does not need a port forward. The default relay port is **52174**.
 
 ```bash
@@ -187,7 +185,7 @@ cd Packages/TetherCore
 swift run tether-relay 52174
 ```
 
-Leave that process running. On the Mac, open **Other networks**, turn the switch on, enter the relay address (for example `example.com:52174`), and save. Copy the setup code. On the iPhone, open Settings → **Other networks**, paste the code, and save. Pair on Wi-Fi once before that. The code is tied to the Mac you already paired. It carries the Mac id, the address, the relay, and a rendezvous token. The token is not the file-encryption key. Someone who has only the token still cannot pass the pairing handshake.
+Leave that process running. On the Mac, open **Settings → Other networks**, turn the switch on, enter the relay address (for example `example.com:52174`), and save. Copy the setup code. On the iPhone, open Settings → **Other networks**, paste the code, and save. Pair on Wi-Fi once before that. The code is tied to the Mac you already paired. It carries the Mac id, the address, the relay, and a rendezvous token. The token is not the file-encryption key. Someone who has only the token still cannot pass the pairing handshake.
 
 Connection order on the phone:
 
@@ -251,6 +249,14 @@ The tests cover pairing, the encrypted channel, framing, path escapes, the virtu
 ## Changelog
 
 The same notes are in Settings → What's new on both the Mac and the iPhone.
+
+### 3.1
+
+Appearance presets and type controls on Mac and iPhone.
+
+- Gold, Blue, Green, Neutral, and Midnight themes retint accent (and lightly tint terminal chrome).
+- GUI text size and weight in Settings → Appearance; iPhone terminal font size stays its own slider.
+- Mac menu bar uses the Dock brand mark; the popover is status, sharing, connected phones, Shelf, Open Tether, Pair, Settings, Quit.
 
 ### 3.0
 

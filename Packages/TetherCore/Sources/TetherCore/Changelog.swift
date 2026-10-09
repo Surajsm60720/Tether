@@ -14,9 +14,14 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "3.0"
+    public static let current = "3.1"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "3.1", items: [
+            "Appearance presets (Gold, Blue, Green, Neutral, Midnight) on Mac and iPhone — accent and type you can change in Settings.",
+            "GUI text size and weight are adjustable; the iPhone terminal keeps its own font size slider.",
+            "Mac menu bar uses the same brand mark as the Dock icon; the popover drops the shared-folders list (use Open Tether instead).",
+        ]),
         ReleaseNotes(version: "3.0", items: [
             "Send files from your iPhone to a Mac Inbox — photos, Files picker, or the Share sheet.",
             "On the Mac, a floating Shelf lets you drag received files into Finder, Mail, Slack, and other apps.",

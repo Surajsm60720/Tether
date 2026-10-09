@@ -5,8 +5,6 @@ enum HostPage: String, CaseIterable, Identifiable {
     case folders
     case inbox
     case phones
-    case otherNetworks
-    case activity
 
     var id: String { rawValue }
 
@@ -16,8 +14,6 @@ enum HostPage: String, CaseIterable, Identifiable {
         case .folders: "Shared folders"
         case .inbox: "Inbox"
         case .phones: "iPhones"
-        case .otherNetworks: "Other networks"
-        case .activity: "Activity"
         }
     }
 
@@ -27,8 +23,6 @@ enum HostPage: String, CaseIterable, Identifiable {
         case .folders: "folder"
         case .inbox: "tray.and.arrow.down"
         case .phones: "iphone"
-        case .otherNetworks: "globe"
-        case .activity: "list.bullet"
         }
     }
 }
@@ -40,9 +34,6 @@ struct HostWindow: View {
     @Environment(\.openWindow) private var openWindow
     @State private var page: HostPage? = .overview
     @State private var showPairing = false
-    @State private var pendingRevoke: DeviceItem?
-    @State private var filter = ""
-    @State private var nameDraft = ""
 
     var body: some View {
         NavigationSplitView {
@@ -68,7 +59,6 @@ struct HostWindow: View {
                     }
                 }
                 Section {
-                    // Opens the full Settings window (same as ⌘, / menu bar Settings…).
                     SettingsLink {
                         Label("Settings", systemImage: "gearshape")
                             .symbolRenderingMode(.hierarchical)
@@ -108,20 +98,6 @@ struct HostWindow: View {
         .sheet(isPresented: $showPairing) {
             PairingWindow(store: store)
         }
-        .confirmationDialog(
-            "Revoke \(pendingRevoke?.name ?? "this iPhone")?",
-            isPresented: Binding(
-                get: { pendingRevoke != nil },
-                set: { if !$0 { pendingRevoke = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Revoke", role: .destructive) {
-                if let pendingRevoke { store.revoke(pendingRevoke) }
-                pendingRevoke = nil
-            }
-            Button("Cancel", role: .cancel) { pendingRevoke = nil }
-        }
     }
 
     @ViewBuilder
@@ -135,10 +111,6 @@ struct HostWindow: View {
             InboxView(store: store)
         case .phones:
             phones
-        case .otherNetworks:
-            OtherNetworksSettings(store: store)
-        case .activity:
-            activity
         }
     }
 
@@ -182,31 +154,10 @@ struct HostWindow: View {
                 .padding(.vertical, 4)
             }
             Section {
-                TextField("Name on iPhone", text: $nameDraft)
-                    .onSubmit { store.setName(nameDraft) }
-                HStack {
-                    Button("Save name") { store.setName(nameDraft) }
-                    Button("Random name") {
-                        let generated = FriendlyName.make()
-                        nameDraft = generated
-                        store.setName(generated)
-                    }
-                }
-            } header: {
-                Text("Name")
-            } footer: {
-                Text("The iPhone uses this name to tell your Mac apart. Save it, or pick a short random name.")
-            }
-            Section {
-                LabeledContent("Sharing") {
-                    Text(store.statusText)
-                        .foregroundStyle(.secondary)
-                }
-                LabeledContent("Network") {
-                    Text(store.networkLine)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
-                }
+                Toggle("Sharing", isOn: Binding(
+                    get: { store.sharingEnabled },
+                    set: { store.setSharing($0) }
+                ))
                 if store.remoteEnabled {
                     LabeledContent("Other networks") {
                         Text(store.relayStatus.isEmpty ? "Listening" : store.relayStatus)
@@ -214,14 +165,12 @@ struct HostWindow: View {
                             .multilineTextAlignment(.trailing)
                     }
                 }
-                Toggle("Sharing", isOn: Binding(
-                    get: { store.sharingEnabled },
-                    set: { store.setSharing($0) }
-                ))
                 if let stale = store.staleMessage {
                     Text(stale)
                         .foregroundStyle(Color.tether.warning)
                 }
+            } footer: {
+                Text("Pause sharing anytime. Rename this Mac and other preferences are in Settings.")
             }
             Section(L10n.connectedDevices) {
                 if store.connected.isEmpty {
@@ -243,22 +192,8 @@ struct HostWindow: View {
                     }
                 }
             }
-            Section {
-                if store.shares.isEmpty {
-                    Text("No folders yet. Add one from Shared folders.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(store.shares) { share in
-                        LabeledContent(share.name, value: share.writable ? L10n.canUpload : L10n.readOnly)
-                    }
-                }
-            } header: {
-                Text(L10n.sharedFolders)
-            }
         }
         .formStyle(.grouped)
-        .onAppear { nameDraft = store.macName }
-        .onChange(of: store.macName) { _, name in nameDraft = name }
     }
 
     private var folders: some View {
@@ -338,61 +273,10 @@ struct HostWindow: View {
                 }
             } header: {
                 Text("On this network")
-            }
-            Section {
-                if store.devices.isEmpty {
-                    Text("No iPhones paired yet. Pair from the iPhone, then connect from here too.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(store.devices) { device in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(device.name)
-                        Text(device.lastSeenAt?.formatted(date: .abbreviated, time: .shortened) ?? "Not seen yet")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if store.connected.contains(where: { $0.id == device.id }) {
-                        Text("Connected")
-                            .font(.caption)
-                            .foregroundStyle(Color.tether.success)
-                    }
-                    Button(L10n.revoke, role: .destructive) { pendingRevoke = device }
-                }
-                .frame(minHeight: 44)
-                }
-            } header: {
-                Text("Paired")
+            } footer: {
+                Text("Paired iPhones and Revoke are in Settings → Devices.")
             }
         }
-    }
-
-    private var activity: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                TextField("Filter", text: $filter)
-                    .textFieldStyle(.roundedBorder)
-                Button(L10n.clear) { store.clearActivity() }
-            }
-            .padding([.horizontal, .top], 16)
-            List(filtered) { event in
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(event.date.formatted(date: .omitted, time: .standard))
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 88, alignment: .leading)
-                    Text(event.text)
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                }
-            }
-        }
-    }
-
-    private var filtered: [ActivityEvent] {
-        guard !filter.isEmpty else { return store.activity }
-        return store.activity.filter { $0.text.localizedCaseInsensitiveContains(filter) }
     }
 }
 

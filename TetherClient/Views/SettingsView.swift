@@ -50,6 +50,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @Bindable var store: ClientStore
+    @Bindable private var appearance = AppearancePreferences.shared
     @State private var confirmForget = false
     @State private var iconChoice = AppIconChoice.current
     @State private var iconError: String?
@@ -63,6 +64,46 @@ struct SettingsView: View {
                     get: { store.deviceName },
                     set: { store.setDeviceName($0) }
                 ))
+            }
+            Section {
+                Picker("Theme", selection: Binding(
+                    get: { appearance.presetID },
+                    set: { appearance.setPresetID($0) }
+                )) {
+                    ForEach(AppearancePresets.all) { preset in
+                        Text(preset.name).tag(preset.id)
+                    }
+                }
+                VStack(alignment: .leading) {
+                    HStack {
+                        Text("Text size")
+                        Spacer()
+                        Text("\(Int(appearance.guiFontSize)) pt")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { appearance.guiFontSize },
+                            set: { appearance.setGUIFontSize($0) }
+                        ),
+                        in: AppearancePreferences.minGUIFontSize...AppearancePreferences.maxGUIFontSize,
+                        step: 1
+                    )
+                }
+                Picker("Text weight", selection: Binding(
+                    get: { appearance.guiFontWeight },
+                    set: { appearance.setGUIFontWeight($0) }
+                )) {
+                    ForEach(GuiFontWeight.allCases) { weight in
+                        Text(weight.title).tag(weight)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text("Themes change accent and type across the app. Terminal font size stays below.")
             }
             Section {
                 Picker("Icon", selection: $iconChoice) {

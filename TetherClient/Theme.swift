@@ -1,42 +1,66 @@
 import SwiftUI
-
-struct TetherColors {
-    let accent = Color("accent")
-    let accentText = Color("accentText")
-    let success = Color("success")
-    let warning = Color("warning")
-    let danger = Color("danger")
-}
-
-struct TerminalTheme {
-    let bg = Color("termBg")
-    let fg = Color("termFg")
-    let dim = Color("termDim")
-    let prompt = Color("termPrompt")
-    let dir = Color("termDir")
-    let file = Color("termFile")
-    let exec = Color("termExec")
-    let error = Color("termError")
-}
+import TetherCore
 
 extension Color {
-    static let tether = TetherColors()
+    init(_ rgba: ThemeRGBA) {
+        self.init(.sRGB, red: rgba.r, green: rgba.g, blue: rgba.b, opacity: rgba.a)
+    }
+
+    /// Live palette from `AppearancePreferences`. Asset-catalog colors remain the Gold fallback.
+    @MainActor
+    static var tether: TetherColors { TetherColors() }
 }
 
-extension TerminalTheme {
-    static let standard = TerminalTheme()
+@MainActor
+struct TetherColors {
+    private var preset: AppearancePreset { AppearancePreferences.shared.preset }
+
+    var accent: Color { Color(preset.accent) }
+    var accentText: Color { Color(preset.accentText) }
+    var success: Color { Color(preset.success) }
+    var warning: Color { Color(preset.warning) }
+    var danger: Color { Color(preset.danger) }
 }
 
-/// Text styles only. They follow Dynamic Type; hero symbols use `.largeTitle` rather than a fixed point size.
+@MainActor
+struct TerminalTheme {
+    private var tokens: TerminalPaletteTokens {
+        AppearancePreferences.shared.preset.terminal
+            ?? AppearancePresets.gold.terminal!
+    }
+
+    var bg: Color { Color(tokens.bg) }
+    var fg: Color { Color(tokens.fg) }
+    var dim: Color { Color(tokens.dim) }
+    var prompt: Color { Color(tokens.prompt) }
+    var dir: Color { Color(tokens.dir) }
+    var file: Color { Color(tokens.file) }
+    var exec: Color { Color(tokens.exec) }
+    var error: Color { Color(tokens.error) }
+
+    static var standard: TerminalTheme { TerminalTheme() }
+}
+
+/// GUI text styles follow AppearancePreferences size/weight. Terminal keeps its own size slider.
+@MainActor
 enum TetherType {
-    static let hero = Font.largeTitle
-    static let title = Font.title2
-    static let section = Font.headline
-    static let body = Font.body
-    static let secondary = Font.subheadline
-    static let meta = Font.caption
-    static let footnote = Font.footnote
-    static let code = Font.system(.title3, design: .monospaced)
+    private static var size: CGFloat { CGFloat(AppearancePreferences.shared.guiFontSize) }
+    private static var weight: Font.Weight {
+        switch AppearancePreferences.shared.guiFontWeight {
+        case .regular: .regular
+        case .medium: .medium
+        case .semibold: .semibold
+        }
+    }
+
+    static var hero: Font { .system(size: size + 10, weight: weight) }
+    static var title: Font { .system(size: size + 4, weight: weight) }
+    static var section: Font { .system(size: size, weight: weight == .regular ? .semibold : weight) }
+    static var body: Font { .system(size: size, weight: weight) }
+    static var secondary: Font { .system(size: size - 1, weight: weight) }
+    static var meta: Font { .system(size: size - 3, weight: weight) }
+    static var footnote: Font { .system(size: size - 4, weight: weight) }
+    static var code: Font { .system(size: size + 2, weight: weight, design: .monospaced) }
 }
 
 enum TetherMotion {

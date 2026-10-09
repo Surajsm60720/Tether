@@ -283,7 +283,7 @@ import Testing
 }
 
 @Test func v1E2E_changelogListsEveryShippedVersion() throws {
-    #expect(AppChangelog.current == "3.0")
+    #expect(AppChangelog.current == "3.1")
     let versions = Set(AppChangelog.releases.map(\.version))
     #expect(versions.contains("1.0"))
     #expect(versions.contains("1.1"))
@@ -296,6 +296,7 @@ import Testing
     #expect(versions.contains("2.5"))
     #expect(versions.contains("2.6"))
     #expect(versions.contains("3.0"))
+    #expect(versions.contains("3.1"))
     let v1 = try #require(AppChangelog.releases.first { $0.version == "1.0" })
     #expect(v1.items.count >= 8)
     let v2 = try #require(AppChangelog.releases.first { $0.version == "2.0" })
@@ -314,6 +315,12 @@ import Testing
     #expect(v26.items.contains(where: { $0.localizedCaseInsensitiveContains("Island") || $0.localizedCaseInsensitiveContains("slot") }))
     let v30 = try #require(AppChangelog.releases.first { $0.version == "3.0" })
     #expect(v30.items.contains(where: { $0.localizedCaseInsensitiveContains("Inbox") || $0.localizedCaseInsensitiveContains("Shelf") }))
+    let v31 = try #require(AppChangelog.releases.first { $0.version == "3.1" })
+    #expect(v31.items.contains(where: {
+        $0.localizedCaseInsensitiveContains("Appearance")
+            || $0.localizedCaseInsensitiveContains("preset")
+            || $0.localizedCaseInsensitiveContains("menu bar")
+    }))
 }
 
 @Test func v1E2E_terminalCommandSurfaceMatchesHelp() async {

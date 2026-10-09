@@ -12,8 +12,8 @@ struct SettingsView: View {
         TabView {
             HostGeneralSettings(store: store)
                 .tabItem { Label(L10n.general, systemImage: "gear") }
-            folders
-                .tabItem { Label(L10n.folders, systemImage: "folder") }
+            HostAppearanceSettings()
+                .tabItem { Label("Appearance", systemImage: "paintpalette") }
             devices
                 .tabItem { Label(L10n.devices, systemImage: "iphone") }
             OtherNetworksSettings(store: store)
@@ -37,33 +37,6 @@ struct SettingsView: View {
                 if let pendingRevoke { store.revoke(pendingRevoke) }
                 pendingRevoke = nil
             }
-        }
-    }
-
-    private var folders: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Table(store.shares) {
-                TableColumn("Name") { share in
-                    TextField("Name", text: Binding(
-                        get: { share.name },
-                        set: { store.rename(share, to: $0) }
-                    ))
-                }
-                TableColumn("Allow uploads") { share in
-                    Toggle("Allow uploads", isOn: Binding(
-                        get: { share.writable },
-                        set: { store.setWritable(share, $0) }
-                    ))
-                    .toggleStyle(.checkbox)
-                    .labelsHidden()
-                }
-                TableColumn("") { share in
-                    Button("Remove", role: .destructive) { store.remove(share) }
-                }
-            }
-            Text("Allow uploads lets the iPhone add files. Leave it off to only allow browsing and downloads. Add folders from the main Tether window.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -131,7 +104,7 @@ struct HostGeneralSettings: View {
                     }
                 }
             } footer: {
-                Text("The iPhone uses this name to tell your Mac apart.")
+                Text("The iPhone uses this name to tell your Mac apart. Pause or resume sharing from Status in the main window.")
             }
             Section {
                 Toggle(L10n.launchAtLogin, isOn: Binding(
@@ -149,10 +122,6 @@ struct HostGeneralSettings: View {
                 Text(L10n.preventSleepHelp)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Toggle("Sharing", isOn: Binding(
-                    get: { store.sharingEnabled },
-                    set: { store.setSharing($0) }
-                ))
             }
             Section {
                 LabeledContent("Save received files to") {
@@ -166,26 +135,14 @@ struct HostGeneralSettings: View {
                     get: { store.openShelfOnReceive },
                     set: { store.setOpenShelfOnReceive($0) }
                 ))
+                Toggle("Play sound when a file arrives", isOn: Binding(
+                    get: { store.playSoundOnReceive },
+                    set: { store.setPlaySoundOnReceive($0) }
+                ))
             } header: {
                 Text("Inbox")
             } footer: {
-                Text("Only files sent from your iPhone are listed in Inbox and Shelf — not everything already in that folder.")
-            }
-            Section {
-                Picker("Icon", selection: Binding(
-                    get: { AppIconChoice.current },
-                    set: { $0.save() }
-                )) {
-                    ForEach(AppIconChoice.allCases) { choice in
-                        Text(choice.title).tag(choice)
-                    }
-                }
-                Text("Light and Dark follow the Mac’s appearance while Tether is open.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                LabeledContent("Version", value: AppVersion.marketing)
-            } header: {
-                Text("Appearance")
+                Text("Only files sent from your iPhone are listed in Inbox and Shelf — not everything already in that folder. Themes and type live under Appearance.")
             }
         }
         .formStyle(.grouped)

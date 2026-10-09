@@ -45,19 +45,16 @@ struct InboxView: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 12) {
-                Text("Saving to \(store.inboxPathDisplay)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
-                Button("Change…") { store.chooseInboxFolder() }
-                    .font(.caption)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.bar)
+            Text("Saving to \(store.inboxPathDisplay)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.bar)
+                .help("Change the Inbox folder in Settings → General.")
         }
         .confirmationDialog("Clear Inbox list?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Clear list", role: .destructive) { store.clearInbox() }

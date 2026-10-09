@@ -27,12 +27,17 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
 }
 
 enum DockIcon {
+    /// Asset name for the current Dock / menu-bar brand mark (matches Settings → App icon).
     @MainActor
-    static func apply() {
+    static var assetName: String {
         let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let choice = AppIconChoice.current
-        let name = "Dock\(choice.rawValue.capitalized)\(dark ? "Dark" : "Light")"
-        guard let source = NSImage(named: name) else { return }
+        return "Dock\(choice.rawValue.capitalized)\(dark ? "Dark" : "Light")"
+    }
+
+    @MainActor
+    static func apply() {
+        guard let source = NSImage(named: assetName) else { return }
         // Match the live Dock tile. A fixed 128pt image sits smaller than the other icons.
         let tile = NSApp.dockTile.size
         let side = max(tile.width, tile.height)
@@ -118,44 +123,48 @@ struct TetherHostApp: App {
 
     var body: some Scene {
         WindowGroup(id: "main") {
-            HostWindow(store: store)
-                .tint(Color.tether.accent)
+            AppearanceChrome {
+                HostWindow(store: store)
+            }
         }
         .defaultSize(width: 920, height: 600)
 
         MenuBarExtra {
             MenuBarRoot(store: store)
         } label: {
-            Image(systemName: "macbook.and.iphone")
-                .accessibilityLabel(store.statusLabel)
+            MenuBarIconLabel(accessibilityLabel: store.statusLabel)
         }
-        .menuBarExtraStyle(.window)
+        .menuBarExtraStyle(.menu)
 
         Window("Pair new iPhone", id: "pair") {
-            PairingWindow(store: store)
-                .tint(Color.tether.accent)
+            AppearanceChrome {
+                PairingWindow(store: store)
+            }
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 420, height: 520)
 
         Window("Welcome to Tether", id: "welcome") {
-            WelcomeView(store: store)
-                .tint(Color.tether.accent)
+            AppearanceChrome {
+                WelcomeView(store: store)
+            }
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 420, height: 280)
 
         Window("Shelf", id: "shelf") {
-            ShelfView(store: store)
-                .tint(Color.tether.accent)
+            AppearanceChrome {
+                ShelfView(store: store)
+            }
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 520, height: 140)
         .windowStyle(.hiddenTitleBar)
 
         Settings {
-            SettingsView(store: store)
-                .tint(Color.tether.accent)
+            AppearanceChrome {
+                SettingsView(store: store)
+            }
         }
         .commands {
             CommandGroup(replacing: .newItem) {
