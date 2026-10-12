@@ -91,6 +91,16 @@ final class HostStore {
     var sharingEnabled: Bool
     var requireApproval: Bool
     var preventSleepWhileActive: Bool
+    /// When false, lid-closed `disablesleep` is only held on AC power (saves battery).
+    var holdAwakeOnBattery: Bool
+    /// Lid-closed privilege: installed, missing, or recovery agent still clearing a dead session.
+    var sleepPrivilegeStatus: SleepPrivilegeStatus = .notInstalled
+    /// True while Host currently holds `pmset disablesleep`.
+    var lidClosedAwakeActive = false
+    /// Human-readable reason when Right now is not holding (policy or pmset failure).
+    var lidClosedAwakeReason: String = ""
+    /// Mirrored for Lid-closed awake status UI.
+    var runtimeLiveAgentCount: Int = 0
     var launchAtLogin: Bool
     var offer: PairingOffer?
     var pairingMessage: String = L10n.pairWaiting
@@ -135,6 +145,7 @@ final class HostStore {
         sharingEnabled = defaults.object(forKey: "sharingEnabled") as? Bool ?? true
         requireApproval = defaults.bool(forKey: "requireApproval")
         preventSleepWhileActive = defaults.object(forKey: "preventSleepWhileActive") as? Bool ?? true
+        holdAwakeOnBattery = defaults.object(forKey: "holdAwakeOnBattery") as? Bool ?? true
         launchAtLogin = SMAppService.mainApp.status == .enabled
         remoteEnabled = defaults.bool(forKey: "remoteEnabled")
         reachableAddress = defaults.string(forKey: "reachableAddress") ?? ""
@@ -164,7 +175,16 @@ final class HostStore {
             networkLine = L10n.sharingPaused
         }
         startPhoneBrowser()
-        refreshSleep()
+        sleepGuard.onClamshellChanged = { [weak self] in
+            Task { @MainActor in
+                self?.refreshSleepPrivilegeStatus()
+            }
+        }
+        // Defer sleep/pmset work so the window can appear (agent pmset must not block init).
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(200))
+            self.refreshSleep()
+        }
     }
 
     var nearbyPhones: [DiscoveredHost] = []
@@ -315,6 +335,7 @@ final class HostStore {
         remoteEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "remoteEnabled")
         machineAddresses = MachineAddresses.list()
+        refreshSleep()
         guard sharingEnabled else {
             if !enabled { stopRelay() }
             return
@@ -370,13 +391,120 @@ final class HostStore {
         refreshSleep()
     }
 
+    func setHoldAwakeOnBattery(_ value: Bool) {
+        holdAwakeOnBattery = value
+        UserDefaults.standard.set(value, forKey: "holdAwakeOnBattery")
+        refreshSleep()
+    }
+
     func refreshSleep() {
+        let privilege = sleepGuard.privilegeStatus()
+        // With lid-closed privilege + Other networks, keep the Mac awake so Tailscale can
+        // accept a new session after the lid is already shut (not only mid-session).
+        let keepRemote = remoteEnabled && privilege == .installed
+        let agents = runtime.liveAgentCount()
+        runtimeLiveAgentCount = agents
         let want = SleepPolicy.shouldStayAwake(
             enabled: preventSleepWhileActive,
             connectedDevices: connected.count,
-            liveAgents: runtime.liveAgentCount()
+            liveAgents: agents,
+            keepRemoteReachable: keepRemote
         )
-        sleepGuard.setActive(want)
+        let onAC = MacPowerSource.isExternallyPowered()
+        let allowLidClosed = privilege == .installed && (holdAwakeOnBattery || onAC)
+        sleepGuard.setActive(want, allowLidClosed: allowLidClosed)
+        lidClosedAwakeActive = sleepGuard.isClamshellHeld
+        sleepPrivilegeStatus = privilege
+        lidClosedAwakeReason = Self.awakeReason(
+            want: want,
+            holding: lidClosedAwakeActive,
+            engaging: sleepGuard.isClamshellEngaging,
+            preventSleep: preventSleepWhileActive,
+            privilege: privilege,
+            allowLidClosed: allowLidClosed,
+            onAC: onAC,
+            holdOnBattery: holdAwakeOnBattery,
+            remoteEnabled: remoteEnabled,
+            connected: connected.count,
+            agents: agents,
+            pmsetError: sleepGuard.clamshellError
+        )
+    }
+
+    /// Clears idle assertion and `disablesleep` before quit.
+    func releaseSleepGuards() {
+        sleepGuard.setActive(false)
+        lidClosedAwakeActive = false
+        lidClosedAwakeReason = ""
+        sleepPrivilegeStatus = sleepGuard.privilegeStatus()
+    }
+
+    func refreshSleepPrivilegeStatus() {
+        // Recheck must re-evaluate policy and retry pmset — not only re-read flags.
+        refreshSleep()
+    }
+
+    private static func awakeReason(
+        want: Bool,
+        holding: Bool,
+        engaging: Bool,
+        preventSleep: Bool,
+        privilege: SleepPrivilegeStatus,
+        allowLidClosed: Bool,
+        onAC: Bool,
+        holdOnBattery: Bool,
+        remoteEnabled: Bool,
+        connected: Int,
+        agents: Int,
+        pmsetError: String?
+    ) -> String {
+        if holding { return "Lid-closed sleep is disabled." }
+        if !preventSleep {
+            return "Turn on Prevent sleep while active."
+        }
+        switch privilege {
+        case .notInstalled:
+            return "Install setup on this Mac first."
+        case .agentNotRunning:
+            return "Helper isn’t loaded. Use Repair setup, then Recheck."
+        case .recoveryPending:
+            return "Clearing a stale awake flag… wait a moment, then Recheck."
+        case .installed:
+            break
+        }
+        if want, !allowLidClosed, !holdOnBattery, !onAC {
+            return "On battery — lid-closed hold is off (Battery saver). Plug in or enable Hold awake on battery."
+        }
+        if engaging {
+            return "Turning on…"
+        }
+        if !want {
+            if !remoteEnabled && connected == 0 && agents == 0 {
+                return "Turn on Other networks, or connect an iPhone / start an agent."
+            }
+            return "Waiting for a reason to stay awake."
+        }
+        if let pmsetError, !pmsetError.isEmpty {
+            return pmsetError
+        }
+        return "Couldn’t stay awake. Tap Recheck."
+    }
+
+    /// Opens Terminal to install sudoers + recovery LaunchAgent (password once).
+    @discardableResult
+    func installSleepPrivilege() -> SleepPrivilegeInstallOutcome {
+        let outcome = SleepPrivilegeInstaller.runInstallInTerminal()
+        refreshSleepPrivilegeStatus()
+        return outcome
+    }
+
+    /// Opens Terminal to remove sudoers + recovery LaunchAgent.
+    @discardableResult
+    func uninstallSleepPrivilege() -> SleepPrivilegeInstallOutcome {
+        releaseSleepGuards()
+        let outcome = SleepPrivilegeInstaller.runUninstallInTerminal()
+        refreshSleepPrivilegeStatus()
+        return outcome
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

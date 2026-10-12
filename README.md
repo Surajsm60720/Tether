@@ -1,6 +1,6 @@
 # Tether
 
-Version 3.2.
+Version 3.3.
 
 Tether lets an iPhone browse, preview, download, and upload files on a Mac, send files into a Mac Inbox (with a floating Shelf for drag-out), run a terminal against those folders, and drive allowlisted coding agents (Claude Code, Cursor Agent, Codex, and related CLIs) over a live pseudo-terminal — without a cloud account or a password. The Mac app is the host. The iPhone app is the client. Pairing is a one-time QR code (or a short typed code). After that, the phone keeps a key in the Keychain and can open the Mac again.
 
@@ -64,7 +64,7 @@ The menu bar menu shows whether sharing is on, which phones are connected, and s
 | iPhones | Nearby phones — Look again, Pair, Connect |
 | Settings | Opens the full Settings window (same as ⌘, or the menu bar **Settings…**) |
 
-Settings includes **General** (Mac name, launch at login, approval, prevent sleep, Inbox folder, Shelf / sound on receive), **Appearance** (theme presets, text size/weight, Dock icon), **Devices** (paired phones + Revoke), **Other networks**, **Activity**, and **What's new**.
+Settings includes **General** (Mac name, launch at login, approval, prevent sleep, Inbox folder, Shelf / sound on receive), **Lid-closed awake** (what it does, how to use it, one-time privilege install, Hold awake on battery, recovery details), **Appearance** (theme presets, text size/weight, Dock icon), **Devices** (paired phones + Revoke), **Other networks**, **Activity**, and **What's new**.
 
 Folders start read-only. Turn on **Allow uploads** for a folder before the phone can add files there. Uploads are still limited to that folder. Paths that try to escape it are rejected.
 
@@ -246,135 +246,7 @@ swift test --package-path Packages/TetherCore
 
 The tests cover pairing, the encrypted channel, framing, path escapes, the virtual filesystem, Bonjour names, terminal commands, system-stat formatting, battery maximum-capacity math, the relay, and a direct TCP session. They do not replace trying a real iPhone against the Mac.
 
-## Changelog
 
-The same notes are in Settings → What's new on both the Mac and the iPhone.
-
-### 3.2
-
-Attach files into a live agent, plus quieter agent networking and Island polish.
-
-- Paperclip on a live agent: pick a photo or file → upload to Inbox → paste the Mac absolute path into the agent (no Enter).
-- Agent attach skips the Shelf; Send tab / Share sheet still announce and can open the Shelf.
-- Neutral accent text stays white on dark surfaces; Send’s prominent Photos button stays readable on Neutral.
-- Busy agent PTY output is coalesced on the Mac into fewer Wi-Fi frames.
-- Cursor Island thinking mark advances one hex cell per tick under ActivityKit batching.
-
-### 3.1
-
-Appearance presets and type controls on Mac and iPhone.
-
-- Gold, Blue, Green, Neutral, and Midnight themes retint accent (and lightly tint terminal chrome).
-- GUI text size and weight in Settings → Appearance; iPhone terminal font size stays its own slider.
-- Mac menu bar uses the Dock brand mark; the popover is status, sharing, connected phones, Shelf, Open Tether, Pair, Settings, Quit.
-
-### 3.0
-
-Phone → Mac Send with Inbox and Shelf.
-
-- Send files from the iPhone Send tab, or from the Share sheet (“Send to Mac”).
-- Mac Inbox page lists received files; Open, Reveal, Move, or Delete.
-- Floating Shelf for drag-out into Finder, Mail, Slack, and other apps.
-- Configurable Inbox folder; reserved Inbox share is always writable for paired phones.
-
-### 2.6
-
-Session isolation and Island privacy after 2.5.
-
-- Switching Macs clears terminal slots from the previous host.
-- Agent resume data no longer stores the full launch line.
-- Dynamic Island agent details are fixed status words only (no PTY snippets).
-- Concurrent agent opens cannot exceed the three-session cap.
-
-### 2.5
-
-Security hardening for live agents and shared folders.
-
-- Agents launch only as bare allowlisted names; path-shaped tokens like `./claude` are rejected.
-- The Mac re-checks the allowlist and runs a sanitized command line.
-- `mkdir` no longer follows outbound symlinks out of a share.
-- Each live terminal is bound to the iPhone that opened it.
-
-### 2.4
-
-Multiple terminal slots inside the Terminal tab.
-
-- Up to three reorderable slots: virtual shell, live coding agent, Monitor, or a pinned fetch snapshot.
-- Switch tabs without losing progress; inactive slots keep running in the background.
-- `htop` / `btop` and `fetch` open as slots instead of covering the whole app.
-- More than one coding agent can run at once (still capped at three terminals); the Island follows the focused or most urgent agent.
-
-### 2.3
-
-Live Activities and Dynamic Island for transfers and coding agents.
-
-- File transfers: percent, speed, ETA, and batch count on the Island and Lock Screen; tap to open Transfers.
-- Live agents: per-tool mark plus a status chip (Thinking / Working / Running / Editing / Needs you / Waiting) inferred from the terminal session — never by showing transcript on the Island.
-- When an agent asks for permission, plan approval, or other input, the Island expands with a Needs you alert so you can jump back to Terminal.
-- Updates are opportunistic while iOS keeps the app awake; after that the Island freezes on the last state until you reopen Tether.
-
-### 2.2
-
-Stay awake during remote sessions, keep agents usable over hotspot and other networks, and type less in the everyday terminal.
-
-- Prevent sleep while active (Mac and iPhone Settings): the Mac stays awake while a phone is connected or an agent is still running.
-- Reconnect after a network switch no longer detaches a live agent when the old socket closes.
-- Keystrokes over remote links are sent without waiting for each ACK.
-- Path changes are probed sooner; the terminal keyboard returns when the agent resumes.
-- Terminal suggestions: scrollable dropdown for commands and path segments (listed fresh from the Mac folder you are completing); Tab still unique-fills or opens the same list. `help` opens a tappable catalog with typed syntax (flags and placeholders).
-- Files search: type in the search field to find files and folders across all shares; tap a result to preview or open that folder.
-
-### 2.1
-
-Live-agent UX polish on top of 2.0.
-
-- Switch to Files or Transfers without ending a live agent; Terminal shows a Live badge until you close with X.
-- Tab bar hides while the agent fills Terminal so the PTY and key row use the full bottom edge.
-- Software keyboard no longer shrinks the remote PTY (permission menus stay on screen).
-- Keyboard show/hide key; live agents also get `S-Tab`, `Y`, and `N`.
-- Control-tap http/https links (OSC 8 or plain text) open in the phone browser.
-
-### 2.0
-
-Live coding agents and terminal polish on top of the 1.x security line.
-
-- Allowlisted agents (`claude`, `agent`, `codex`, `cursor`, and related CLIs) open a live PTY on the Mac.
-- Phone acts as screen and keyboard; sessions survive app switch and reconnect.
-- Batched PTY output and viewport-only drawing for long agent runs.
-- Tab completion for everyday terminal commands and paths.
-
-### 1.2
-
-Continued security and reliability hardening on the 1.x line.
-
-- Foreground probe reconnects half-dead sockets instead of hanging actions.
-- Cancelled transfers free waiters immediately.
-- Cache and downloads use Complete protection while the device is locked.
-- Monitor process list is limited to your Mac user account (short names only).
-- Huge folder listings use a scan cap; empty reads back off instead of spinning.
-
-### 1.1
-
-Security patch over 1.0.
-
-- Phone terminal is virtual-only: no Mac `zsh` fall-through.
-- Caps and timeouts on inbound handshakes; global lock after repeated handshake failures.
-- Device keys Keychain-only (legacy on-disk mirrors cleared).
-- Safer uploads (abort on disconnect, chunk bounds) and symlink write rejection.
-- Paginated listings under the frame size limit; relay prelude timeouts.
-- Narrower host sandbox (no whole-home temporary exception).
-
-### 1.0
-
-- Pair an iPhone with a Mac by QR code or a typed code, then reconnect without a password.
-- Browse, preview, download, and upload files in the folders you choose to share.
-- Follow transfers with progress, retry, and cancel.
-- Use a terminal for everyday file commands inside those folders.
-- See who you are with `whoami`, a short Mac summary with `fetch`, and a live monitor with `htop` or `btop`.
-- The monitor shows CPU, memory, swap, disk, network, battery, temperature, and the busiest processes.
-- Reach the Mac from another network with a saved address or a relay, after pairing once on Wi-Fi.
-- Choose an icon color, set the terminal font size, and clear the preview cache.
-- Approve or revoke each iPhone from the Mac.
 
 ## Limits
 

@@ -24,7 +24,7 @@ struct SendView: View {
                         .frame(maxWidth: 220)
                 }
                 .buttonStyle(.borderedProminent)
-                // Prefer accentText when accent is too light for a prominent fill (e.g. Neutral).
+                // Neutral keeps a mid-gray accent fill so the system white label stays readable.
                 .tint(SendAccent.prominentFill)
 
                 Button {
@@ -70,11 +70,14 @@ struct SendView: View {
 @MainActor
 private enum SendAccent {
     static var prominentFill: Color {
-        let accent = AppearancePreferences.shared.preset.accent
-        // Relative luminance (sRGB approx). Near-white accents get a mid-gray fill instead.
+        let preset = AppearancePreferences.shared.preset
+        if preset.id == "neutral" {
+            return Color(AppearancePresets.neutralProminentFill)
+        }
+        let accent = preset.accent
         let luminance = 0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b
         if luminance > 0.75 {
-            return Color(ThemeRGBA(hex: "#8E8E93")!)
+            return Color(AppearancePresets.neutralProminentFill)
         }
         return Color(accent)
     }

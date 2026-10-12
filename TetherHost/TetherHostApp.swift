@@ -102,6 +102,18 @@ final class DockIconController: NSObject, NSApplicationDelegate {
     func applicationDidBecomeActive(_ notification: Notification) {
         DockIcon.apply()
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Clear disablesleep immediately on clean quit; LaunchAgent covers crashes.
+        let clear = {
+            HostStore.shared?.releaseSleepGuards()
+        }
+        if Thread.isMainThread {
+            clear()
+        } else {
+            DispatchQueue.main.sync(execute: clear)
+        }
+    }
 }
 
 @main

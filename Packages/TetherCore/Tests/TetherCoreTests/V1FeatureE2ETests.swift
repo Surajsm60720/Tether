@@ -285,7 +285,7 @@ import Testing
 }
 
 @Test func v1E2E_changelogListsEveryShippedVersion() throws {
-    #expect(AppChangelog.current == "3.2")
+    #expect(AppChangelog.current == "3.3")
     let versions = Set(AppChangelog.releases.map(\.version))
     #expect(versions.contains("1.0"))
     #expect(versions.contains("1.1"))
@@ -300,6 +300,7 @@ import Testing
     #expect(versions.contains("3.0"))
     #expect(versions.contains("3.1"))
     #expect(versions.contains("3.2"))
+    #expect(versions.contains("3.3"))
     let v1 = try #require(AppChangelog.releases.first { $0.version == "1.0" })
     #expect(v1.items.count >= 8)
     let v2 = try #require(AppChangelog.releases.first { $0.version == "2.0" })
@@ -341,6 +342,18 @@ import Testing
         $0.localizedCaseInsensitiveContains("Wi-Fi")
             || $0.localizedCaseInsensitiveContains("coalesc")
             || $0.localizedCaseInsensitiveContains("Island")
+    }))
+    let v33 = try #require(AppChangelog.releases.first { $0.version == "3.3" })
+    #expect(v33.items.contains(where: {
+        $0.localizedCaseInsensitiveContains("Tailscale")
+            || $0.localizedCaseInsensitiveContains("heartbeat")
+            || $0.localizedCaseInsensitiveContains("stall")
+    }))
+    #expect(v33.items.contains(where: {
+        $0.localizedCaseInsensitiveContains("battery")
+    }))
+    #expect(v33.items.contains(where: {
+        $0.localizedCaseInsensitiveContains("Neutral")
     }))
 }
 

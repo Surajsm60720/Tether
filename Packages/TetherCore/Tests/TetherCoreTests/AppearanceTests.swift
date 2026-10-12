@@ -9,10 +9,35 @@ import Testing
     #expect(AppearancePresets.resolve("gold").name == "Gold")
 }
 
-@Test func appearanceNeutralAccentIsNotNearWhite() {
+@Test func appearanceNeutralAccentIsBrightForInteractiveLabels() {
     let accent = AppearancePresets.neutral.accent
     let luminance = 0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b
-    #expect(luminance < 0.75)
+    // Must stay clearly brighter than system disabled gray (~0.56).
+    #expect(luminance > 0.75)
+}
+
+@Test func appearanceNeutralProminentFillSupportsWhiteLabels() {
+    let fill = AppearancePresets.neutralProminentFill
+    let luminance = 0.2126 * fill.r + 0.7152 * fill.g + 0.0722 * fill.b
+    #expect(luminance < 0.55)
+}
+
+@Test func appearanceNeutralAccentTextIsClassicalWhite() {
+    let text = AppearancePresets.neutral.accentText
+    #expect(text.r == 1 && text.g == 1 && text.b == 1 && text.a == 1)
+}
+
+@Test func appearanceNeutralTerminalTypeIsNearWhite() {
+    let terminal = AppearancePresets.neutral.terminal
+    #expect(terminal != nil)
+    guard let terminal else { return }
+    // Primary terminal type should stay clearly brighter than mid-gray (disabled look).
+    for color in [terminal.fg, terminal.file, terminal.dir, terminal.prompt] {
+        let luminance = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b
+        #expect(luminance > 0.8)
+    }
+    let dimLuminance = 0.2126 * terminal.dim.r + 0.7152 * terminal.dim.g + 0.0722 * terminal.dim.b
+    #expect(dimLuminance < 0.7)
 }
 
 @Test func appearanceResolveUnknownFallsBackToGold() {

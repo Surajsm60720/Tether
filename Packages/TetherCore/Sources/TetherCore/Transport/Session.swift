@@ -940,29 +940,45 @@ public actor ClientConnection {
     }
 
     private func beat() async {
+        var consecutiveMisses = 0
         while !closed {
-            try? await Task.sleep(for: .seconds(8))
+            try? await Task.sleep(for: SessionLiveness.pingInterval)
             if closed { return }
-            if Date().timeIntervalSince(lastReceived) > 25 {
-                await shutdown(notify: true)
-                return
+            if SessionLiveness.hasRecentTraffic(lastReceived: lastReceived) {
+                consecutiveMisses = 0
+                continue
             }
             var header = Header()
             header.op = Op.ping
-            _ = try? await roundTrip(header, timeout: .seconds(12))
+            do {
+                _ = try await roundTrip(header, timeout: SessionLiveness.pingTimeout)
+                consecutiveMisses = 0
+            } catch {
+                consecutiveMisses += 1
+                if SessionLiveness.shouldDisconnect(
+                    consecutiveMisses: consecutiveMisses,
+                    hasRecentTraffic: SessionLiveness.hasRecentTraffic(lastReceived: lastReceived)
+                ) {
+                    await shutdown(notify: true)
+                    return
+                }
+            }
         }
     }
 
-    /// Fast liveness probe used when the iPhone returns to the foreground.
-    public func checkAlive(timeout: Duration = .seconds(3)) async -> Bool {
+    /// Soft liveness probe (foreground / path change). Never tears the session down —
+    /// a single Tailscale stall must not kill the connection; the caller decides next steps.
+    public func checkAlive(timeout: Duration = SessionLiveness.softProbeTimeout) async -> Bool {
         guard !closed else { return false }
+        if SessionLiveness.hasRecentTraffic(lastReceived: lastReceived, grace: 20) {
+            return true
+        }
         do {
             var header = Header()
             header.op = Op.ping
             _ = try await roundTrip(header, timeout: timeout)
             return true
         } catch {
-            await shutdown(notify: true)
             return false
         }
     }

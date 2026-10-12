@@ -92,8 +92,10 @@ Status should indicate the Mac is listening. Port is **52173**.
 
 Useful extras:
 
-- Turn on **Prevent sleep while active** on Mac and iPhone Settings so the Mac does not sleep mid-session.
-- Keep the Mac awake and online on Tailscale while you expect remote use.
+- Turn on **Prevent sleep while active** so the Mac does not idle-sleep mid-session.
+- For a closed lid: Mac **Settings → Lid-closed awake** → install once, leave Prevent sleep and Other networks on until **Right now** says Holding awake, then close the lid. Prefer AC power; keep Low Power Mode off.
+- **Hold awake on battery** (same tab): leave on for lid-closed work away from a charger; turn off to save battery when unplugged (lid-closed hold waits until you plug in).
+- Keep Tailscale **Connected** on Mac and iPhone for cellular / other-network use. Brief Tailscale stalls should reconnect quietly without wiping a live session.
 
 ---
 
@@ -206,7 +208,16 @@ No. When Bonjour sees the Mac on the local network, Tether uses that path first.
 You were likely still depending on local Wi‑Fi discovery. Configure Tailscale (or relay / public address) and save a fresh code that shows `100.…` or a relay on the phone.
 
 **Will coding agents work remotely?**  
-Yes, over the same encrypted session once the remote path is working. Keep the Mac awake (Prevent sleep while active) so long agent runs are not cut off.
+Yes, over the same encrypted session once the remote path is working. Keep the Mac awake (Prevent sleep while active, and lid-closed privilege if you close the lid) so long agent runs are not cut off.
+
+**What if I close the MacBook lid?**  
+Idle-sleep prevention alone is not enough. Install lid-closed privilege so Tether can set `disablesleep` while a session is active. If Host dies, a recovery agent undoes that flag so the Mac is not stuck awake.
+
+**Does lid-closed awake drain the battery?**  
+Holding the Mac awake with the lid closed uses more power than sleep — that is the tradeoff for Tailscale staying up. Prefer AC for long sessions. Turn off **Hold awake on battery** if you only want lid-closed hold while plugged in. On battery, Host also spaces network keepalives further apart.
+
+**Why did the phone say Reconnecting after a short Tailscale blip?**  
+Older builds treated a short stall as a dead peer. Current builds soft-probe twice and keep the session when traffic is still flowing; a true drop still reconnects with backoff.
 
 ---
 

@@ -151,7 +151,7 @@ Tether/
 ### 7.3 Connection model
 - One long-lived TCP connection per paired host, carrying multiplexed request/response messages identified by a `requestId`.
 - File transfers use the same connection, chunked, with flow control via request/response (client pulls chunks with `read`, client pushes chunks with `write.chunk` and waits for the ack).
-- Heartbeat: `ping` every 10 seconds; treat 25 seconds of silence as disconnected and auto-retry with backoff (1, 2, 4, 8 s, capped at 15 s).
+- Heartbeat: `ping` about every 12 seconds with a 30 s reply window. Tear down only after several consecutive misses **and** no recent application traffic (Tailscale / lid-closed stalls of tens of seconds must not look like a dead peer). Foreground and path-change probes use a soft double-check (about 10 s then 15 s) and must not destroy the socket on the first miss. Auto-retry with backoff (1, 2, 4, 8 s, capped at 15 s).
 
 ---
 
@@ -283,7 +283,7 @@ Menu bar app (`LSUIElement = true`, no Dock icon by default). Built with SwiftUI
 - **Activity log:** last 100 events (connect, list, read, write, denied) with timestamps. Filenames shown in the log are stored in memory only and cleared on quit.
 - **Settings:** Mac display name, launch at login (`SMAppService.mainApp`), paired devices list with *Revoke*, *Require approval each session*, *Stop sharing* master switch.
 - **Thumbnails:** `QLThumbnailGenerator` with an in-memory LRU cache (100 items).
-- **Power:** when *Prevent sleep while active* is on (default), hold a `ProcessInfo.beginActivity` assertion while an iPhone is connected or a coding agent is still running so the Mac does not sleep mid-session.
+- **Power:** when *Prevent sleep while active* is on (default), hold a `ProcessInfo.beginActivity` assertion while an iPhone is connected or a coding agent is still running so the Mac does not idle-sleep mid-session. With the optional lid-closed privilege installed (narrow `sudoers` rule for `pmset disablesleep` plus a LaunchAgent), also set `pmset -a disablesleep 1` so closing the lid keeps Wi‑Fi / Tailscale up. Do not force Low Power Mode during those sessions — it breaks Tailscale keepalives. Write a sleep journal before enabling the flag; clear it on session end and on quit. If Host crashes, the LaunchAgent clears `disablesleep` within about a minute even if an agent process is still running.
 
 ### 11.4 Acceptance criteria (Host)
 - Starts listening on launch if at least one share exists; advertises via Bonjour (verify with `dns-sd -B _tether._tcp`).

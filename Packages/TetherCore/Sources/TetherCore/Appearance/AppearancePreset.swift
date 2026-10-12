@@ -141,14 +141,28 @@ public enum AppearancePresets: Sendable {
     public static let neutral = AppearancePreset(
         id: "neutral",
         name: "Neutral",
-        // Mid gray — not pure white. White accent makes `.borderedProminent` labels vanish on dark UI.
-        accent: ThemeRGBA(hex: "#8E8E93")!,
-        accentText: ThemeRGBA(hex: "#AEAEB2")!,
+        // Bright cool gray for list tints (host names, file rows, toolbar). System
+        // `#8E8E93` reads as “disabled”; this stays clearly interactive on dark UI.
+        // Prominent buttons use a separate darker fill (see client `SendAccent`).
+        accent: ThemeRGBA(hex: "#E5E5EA")!,
+        accentText: ThemeRGBA(hex: "#FFFFFF")!,
         success: ThemeRGBA(hex: "#4CC38A")!,
         warning: ThemeRGBA(hex: "#F0A84A")!,
         danger: ThemeRGBA(hex: "#FF6B6B")!,
-        terminal: Self.defaultTerminal(prompt: ThemeRGBA(hex: "#A1A1A6")!)
+        terminal: TerminalPaletteTokens(
+            bg: ThemeRGBA(hex: "#121417")!,
+            fg: ThemeRGBA(hex: "#F5F5F7")!,
+            dim: ThemeRGBA(hex: "#8E8E93")!,
+            prompt: ThemeRGBA(hex: "#E5E5EA")!,
+            dir: ThemeRGBA(hex: "#F5F5F7")!,
+            file: ThemeRGBA(hex: "#F5F5F7")!,
+            exec: ThemeRGBA(hex: "#7EE787")!,
+            error: ThemeRGBA(hex: "#FF7B72")!
+        )
     )
+
+    /// Dark enough for white labels on `.borderedProminent` when Neutral’s accent is light.
+    public static let neutralProminentFill = ThemeRGBA(hex: "#636366")!
 
     public static let midnight = AppearancePreset(
         id: "midnight",

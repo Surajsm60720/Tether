@@ -45,9 +45,10 @@ public enum TetherLink {
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true
         tcp.enableKeepalive = true
-        tcp.keepaliveIdle = 10
-        tcp.keepaliveInterval = 5
-        tcp.keepaliveCount = 3
+        // Tailscale / cellular can pause longer than LAN; avoid declaring the TCP dead too early.
+        tcp.keepaliveIdle = 30
+        tcp.keepaliveInterval = 10
+        tcp.keepaliveCount = 5
         let parameters = NWParameters(tls: nil, tcp: tcp)
         parameters.includePeerToPeer = peerToPeer
         parameters.serviceClass = .responsiveData

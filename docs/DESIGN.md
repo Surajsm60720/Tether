@@ -47,6 +47,7 @@ Rules:
 - Use system semantic colors (`.primary`, `.secondary`, `Color(.systemBackground)` and friends) for text and backgrounds. Only the tokens above are custom.
 - **Never use `accent` as small text color on light backgrounds** (contrast is insufficient). Use `accentText`, or put text on an accent fill with a dark label.
 - Never rely on color alone: pair status color with an icon and a word.
+- **Neutral preset:** use a bright cool-gray `accent` (`#E5E5EA`) so list tints (host names, file rows, buttons) do not match system disabled gray. Keep classical white `#FFFFFF` for `accentText` and near-white terminal `fg` / `dir` / `file`. Prominent buttons use a darker Neutral fill (`#636366`) so white labels stay readable.
 
 ### 3.2 Terminal palette (both modes use the dark terminal by default; a light variant is optional)
 
@@ -197,7 +198,8 @@ Primary pages (first-glance operations only): **Status**, **Shared folders**, **
 
 ### 7.5 Settings window
 Standard Settings scene (⌘, / menu bar **Settings…** / sidebar Settings) with tabs:
-- **General** — Mac name, launch at login, require approval, prevent sleep, Inbox folder, Show Shelf on receive, play sound on receive.
+- **General** — Mac name, launch at login, require approval, prevent sleep (short help; lid details live in their own tab), Inbox folder, Show Shelf on receive, play sound on receive.
+- **Lid-closed awake** — what it does, how to use it, privilege status, install/remove, **Hold awake on battery**, power source (AC / battery), and recovery details. Prevent sleep toggle is mirrored here for the remote-awake workflow.
 - **Appearance** — theme presets (Gold / Blue / Green / Neutral / Midnight), GUI text size and weight, Dock icon, version. Classic SwiftUI only.
 - **Devices** — paired iPhones + Revoke.
 - **Other networks** — remote listen, addresses, relay, iPhone setup code.

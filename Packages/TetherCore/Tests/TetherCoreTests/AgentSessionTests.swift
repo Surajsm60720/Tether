@@ -268,6 +268,47 @@ import Testing
     #expect(SleepPolicy.shouldStayAwake(enabled: true, connectedDevices: 0, liveAgents: 1))
     #expect(!SleepPolicy.shouldStayAwake(enabled: true, connectedDevices: 0, liveAgents: 0))
     #expect(!SleepPolicy.shouldStayAwake(enabled: false, connectedDevices: 2, liveAgents: 2))
+    #expect(SleepPolicy.shouldStayAwake(
+        enabled: true,
+        connectedDevices: 0,
+        liveAgents: 0,
+        keepRemoteReachable: true
+    ))
+    #expect(!SleepPolicy.shouldStayAwake(
+        enabled: false,
+        connectedDevices: 0,
+        liveAgents: 0,
+        keepRemoteReachable: true
+    ))
+}
+
+@Test func sleepPolicyRecoversOnlyWhenOwnerIsGone() {
+    let held = SleepJournal(ownerPID: 4242, disablesleepEnabled: true)
+    #expect(!SleepPolicy.shouldRecover(journal: held, isOwnerAlive: { $0 == 4242 }))
+    #expect(SleepPolicy.shouldRecover(journal: held, isOwnerAlive: { _ in false }))
+    #expect(!SleepPolicy.shouldRecover(journal: nil, isOwnerAlive: { _ in false }))
+    let idle = SleepJournal(ownerPID: 1, disablesleepEnabled: false)
+    #expect(!SleepPolicy.shouldRecover(journal: idle, isOwnerAlive: { _ in false }))
+}
+
+@Test func sleepJournalRoundTripsOnDisk() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("tether-sleep-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent(SleepJournalStore.fileName)
+    let original = SleepJournal(
+        ownerPID: 99,
+        disablesleepEnabled: true,
+        lowPowerModePrevious: false,
+        updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    try SleepJournalStore.write(original, to: url)
+    let loaded = try #require(try SleepJournalStore.read(from: url))
+    #expect(loaded.ownerPID == 99)
+    #expect(loaded.disablesleepEnabled)
+    #expect(loaded.lowPowerModePrevious == false)
+    SleepJournalStore.remove(at: url)
+    #expect(try SleepJournalStore.read(from: url) == nil)
 }
 
 private func waitUntil(timeout: Duration, _ condition: @Sendable () -> Bool) async -> Bool {

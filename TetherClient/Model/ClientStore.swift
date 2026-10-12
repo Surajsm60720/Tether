@@ -1895,11 +1895,7 @@ final class ClientStore {
         guard connected, activeHost != nil, !demoMode, !intentionalDisconnect else { return }
         if let connection {
             Task { [weak self] in
-                let alive = await connection.checkAlive()
-                guard let self, !alive else { return }
-                await MainActor.run {
-                    self.handleDisconnect(from: connection)
-                }
+                await self?.probeConnectionOrReconnect(connection)
             }
             return
         }
@@ -2012,13 +2008,18 @@ final class ClientStore {
         guard connected, !intentionalDisconnect, !demoMode else { return }
         if let connection {
             Task { [weak self] in
-                let alive = await connection.checkAlive(timeout: .seconds(2))
-                guard let self, !alive else { return }
-                await MainActor.run { self.handleDisconnect(from: connection) }
+                await self?.probeConnectionOrReconnect(connection)
             }
         } else if reconnecting {
             scheduleReconnect()
         }
+    }
+
+    /// Soft double-probe so a single Tailscale stall does not drop the session or flash warnings.
+    private func probeConnectionOrReconnect(_ connection: ClientConnection) async {
+        if await connection.checkAlive(timeout: SessionLiveness.softProbeTimeout) { return }
+        if await connection.checkAlive(timeout: SessionLiveness.softProbeRetryTimeout) { return }
+        await MainActor.run { handleDisconnect(from: connection) }
     }
 
     private func syncPreventSleepPreference() async {
@@ -2091,7 +2092,7 @@ final class ClientStore {
                     return
                 }
                 try? await Task.sleep(for: .seconds(delay))
-                delay = min(delay * 2, 8)
+                delay = min(delay * 2, 15)
             }
         }
     }

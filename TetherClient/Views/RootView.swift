@@ -137,6 +137,7 @@ struct HostsView: View {
                     ForEach(unpairedNearby) { host in
                         HStack {
                             Label(host.name, systemImage: "laptopcomputer")
+                                .foregroundStyle(.primary)
                             Spacer()
                             Button(L10n.pair) { store.showPairing = true }
                                 .buttonStyle(.bordered)
@@ -169,7 +170,9 @@ struct HostsView: View {
                                     ProgressView()
                                 }
                             }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                         .disabled(store.connectingName != nil)
                         .frame(minHeight: 44)
                         .swipeActions {
@@ -250,7 +253,7 @@ struct StatusDot: View {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(title)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(title)

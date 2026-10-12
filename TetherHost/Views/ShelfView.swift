@@ -8,6 +8,8 @@ struct ShelfView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Header is the only window-move surface — tiles must not share
+            // isMovableByWindowBackground or the shelf follows file drags.
             HStack {
                 Label("Shelf", systemImage: "shippingbox")
                     .font(TetherType.section)
@@ -19,12 +21,17 @@ struct ShelfView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+            .overlay(ShelfWindowDragRegion())
 
             if store.shelfItems.isEmpty {
                 Text("Only the latest batch from your iPhone appears here. Drag files into any app.")
                     .font(TetherType.secondary)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .overlay(ShelfWindowDragRegion())
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
@@ -199,6 +206,12 @@ private final class ShelfTileNSView: NSView, NSDraggingSource {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    /// Keep file-drag hits on this view — the SwiftUI chrome subview must not steal them
+    /// (or AppKit falls through to window-move behavior).
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
     override func mouseDown(with event: NSEvent) {
         mouseDownEvent = event
         didDrag = false
@@ -233,6 +246,29 @@ private final class ShelfTileNSView: NSView, NSDraggingSource {
     }
 }
 
+/// Drag this region to reposition the floating Shelf window.
+private struct ShelfWindowDragRegion: NSViewRepresentable {
+    func makeNSView(context: Context) -> ShelfMoveNSView { ShelfMoveNSView() }
+
+    func updateNSView(_ nsView: ShelfMoveNSView, context: Context) {}
+}
+
+private final class ShelfMoveNSView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
+}
+
 private struct ShelfWindowChrome: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -240,7 +276,8 @@ private struct ShelfWindowChrome: NSViewRepresentable {
             guard let window = view.window else { return }
             window.level = .floating
             window.collectionBehavior.insert([.canJoinAllSpaces, .fullScreenAuxiliary])
-            window.isMovableByWindowBackground = true
+            // File tiles own their drags; only ShelfWindowDragRegion moves the window.
+            window.isMovableByWindowBackground = false
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
         }
@@ -249,7 +286,9 @@ private struct ShelfWindowChrome: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
-            nsView.window?.level = .floating
+            guard let window = nsView.window else { return }
+            window.level = .floating
+            window.isMovableByWindowBackground = false
         }
     }
 }

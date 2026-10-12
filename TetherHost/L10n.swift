@@ -33,6 +33,18 @@ enum L10n {
             "Keeps this Mac awake while an iPhone is connected or a coding agent is still running, so remote sessions are not cut off."
         )
     }
+    static var lidClosedAwake: String {
+        text("settings.lidClosedAwake", "Lid-closed awake")
+    }
+    static var lidClosedPrivilege: String {
+        text("settings.lidClosedPrivilege", "Install on this Mac…")
+    }
+    static var lidClosedPrivilegeHelp: String {
+        text(
+            "settings.lidClosedPrivilege.help",
+            "One-time setup: privilege rule, helper script, and LaunchAgent. Password once. If Host crashes, normal sleep returns within about a minute."
+        )
+    }
     static var revoke: String { text("settings.revoke", "Revoke") }
     static var clear: String { text("settings.clear", "Clear") }
     static var staleBookmark: String { text("host.stale", "A shared folder needs to be chosen again.") }

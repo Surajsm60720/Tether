@@ -14,15 +14,22 @@ public struct ReleaseNotes: Equatable, Sendable, Identifiable {
 
 /// User-facing history shown in Settings on the Mac and the iPhone.
 public enum AppChangelog {
-    public static let current = "3.2"
+    public static let current = "3.3"
 
     public static let releases: [ReleaseNotes] = [
+        ReleaseNotes(version: "3.3", items: [
+            "Lid-closed awake over Tailscale: softer heartbeats, longer TCP keepalive, and double soft-probes so a brief stall does not drop the session or flash Reconnecting.",
+            "Hold awake on battery: optional toggle in Lid-closed awake — turn it off to skip lid-closed hold when unplugged; network keepalives are quieter on battery.",
+            "More reliable lid-closed privilege install (password prompt, quarantine-safe LaunchAgent load, verified passwordless pmset).",
+            "Neutral appearance uses a bright cool-gray accent so host names, file rows, and buttons read as available — not like disabled controls.",
+        ]),
         ReleaseNotes(version: "3.2", items: [
             "Attach a photo or file from a live agent session: it lands in the Mac Inbox and the absolute path is pasted into the agent chat.",
             "Agent attach does not open the Shelf — Send from the Send tab still does, so drag-out stays intentional.",
-            "Neutral appearance uses classical white accent text instead of grey, so type stays crisp on dark backgrounds.",
+            "Neutral appearance uses white accent and terminal type instead of grey, so folders and files read as accessible on dark backgrounds.",
             "Live agent output is coalesced into fewer Wi-Fi frames on the Mac so busy sessions share the link more fairly with other apps.",
             "Cursor’s Island thinking mark advances one hex cell per tick so the chase stays crisp when ActivityKit batches updates.",
+            "Lid-closed awake: a Settings tab explains how to keep Tailscale and agents reachable with the lid closed, with one-time privilege install and crash recovery.",
         ]),
         ReleaseNotes(version: "3.1", items: [
             "Appearance presets (Gold, Blue, Green, Neutral, Midnight) on Mac and iPhone — accent and type you can change in Settings.",

@@ -12,6 +12,8 @@ struct SettingsView: View {
         TabView {
             HostGeneralSettings(store: store)
                 .tabItem { Label(L10n.general, systemImage: "gear") }
+            LidClosedAwakeSettings(store: store)
+                .tabItem { Label(L10n.lidClosedAwake, systemImage: "laptopcomputer.and.arrow.down") }
             HostAppearanceSettings()
                 .tabItem { Label("Appearance", systemImage: "paintpalette") }
             devices
@@ -23,7 +25,7 @@ struct SettingsView: View {
             HostWhatsNew()
                 .tabItem { Label("What's new", systemImage: "sparkles") }
         }
-        .frame(width: 560, height: 480)
+        .frame(width: 580, height: 520)
         .padding(16)
         .confirmationDialog(
             "Revoke \(pendingRevoke?.name ?? "this iPhone")?",
@@ -120,6 +122,9 @@ struct HostGeneralSettings: View {
                     set: { store.setPreventSleepWhileActive($0) }
                 ))
                 Text(L10n.preventSleepHelp)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text("For lid-closed remote access, open the Lid-closed awake tab.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

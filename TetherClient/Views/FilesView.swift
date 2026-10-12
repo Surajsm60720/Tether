@@ -202,7 +202,7 @@ struct FilesView: View {
                                 HStack(spacing: 12) {
                                     Image(systemName: hit.entry.kind == .dir ? "folder.fill" : "doc")
                                         .font(.title3)
-                                        .foregroundStyle(hit.entry.kind == .dir ? Color.tether.accent : Color.secondary)
+                                        .foregroundStyle(hit.entry.kind == .dir ? Color.tether.accentText : Color.secondary)
                                         .frame(width: 28)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(hit.entry.name)
@@ -358,6 +358,7 @@ struct FileRow: View {
                 }
             }
         }
+        .buttonStyle(.plain)
         .frame(minHeight: 44)
         .accessibilityLabel(accessibilityText)
         .swipeActions(edge: .leading) {
